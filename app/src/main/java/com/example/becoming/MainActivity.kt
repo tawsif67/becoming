@@ -1,106 +1,169 @@
 package com.example.becoming
 
+import android.net.Uri
 import android.os.Bundle
+import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.*
 import com.example.becoming.ui.theme.BecomingTheme
 
 class MainActivity : ComponentActivity() {
+    private var soundManager: SoundManager? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        soundManager = SoundManager(this)
+
         setContent {
             BecomingTheme {
-                BecomingApp()
+                val viewModel: BecomingViewModel = viewModel()
+                val context = LocalContext.current
+                
+                var isDataLoaded by remember { mutableStateOf(value = false) }
+                var startDestination by remember { mutableStateOf("onboarding") }
+                var showVideo by remember { mutableStateOf(true) }
+
+                LaunchedEffect(Unit) {
+                    val onboardingComplete = viewModel.loadData(context)
+                    startDestination = if (onboardingComplete) "title_screen" else "onboarding"
+                    isDataLoaded = true
+                }
+
+                Box(modifier = Modifier.fillMaxSize()) {
+                    if (showVideo) {
+                        IntroVideoScreen(onFinished = {
+                            showVideo = false
+                            soundManager?.startBgm()
+                        })
+                    } else if (isDataLoaded) {
+                        // --- GLOBAL PARCHMENT BACKGROUND ---
+                        Image(
+                            painter = painterResource(id = R.drawable.bgi),
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.FillBounds
+                        )
+
+                        val navController = rememberNavController()
+                        val charState by viewModel.charState.collectAsState()
+
+                        NavHost(navController = navController, startDestination = startDestination) {
+                            composable("onboarding") {
+                                OnboardingScreen(
+                                    viewModel = viewModel,
+                                    soundManager = soundManager,
+                                    onComplete = {
+                                        viewModel.saveData(context)
+                                        navController.navigate("dashboard") { 
+                                            popUpTo("onboarding") { inclusive = true } 
+                                        }
+                                    }
+                                )
+                            }
+
+                            composable("title_screen") {
+                                TitleScreen(
+                                    state = charState,
+                                    soundManager = soundManager,
+                                    onContinue = {
+                                        navController.navigate("dashboard") {
+                                            popUpTo("title_screen") { inclusive = true }
+                                        }
+                                    }
+                                )
+                            }
+
+                            composable("dashboard") {
+                                DashboardScreen(
+                                    viewModel = viewModel,
+                                    soundManager = soundManager,
+                                    onQuestSelected = { questId -> navController.navigate("quest/$questId") },
+                                    onCreateQuest = { navController.navigate("create_quest") }
+                                )
+                            }
+
+                            composable("create_quest") {
+                                CustomQuestScreen(
+                                    viewModel = viewModel,
+                                    soundManager = soundManager,
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
+
+                            composable("quest/{questId}") { backStackEntry ->
+                                val questId = backStackEntry.arguments?.getString("questId")
+                                val activeQuests by viewModel.activeQuests.collectAsState()
+                                val quest = activeQuests.find { it.id == questId }
+
+                                if (quest != null) {
+                                    QuestLoopScreen(
+                                        quest = quest,
+                                        viewModel = viewModel,
+                                        soundManager = soundManager,
+                                        onComplete = {
+                                            navController.popBackStack("dashboard", inclusive = false)
+                                        }
+                                    )
+                                }
+                            }
+
+                            composable("reward/{xp}/{leveled}") { backStackEntry ->
+                                val xp = backStackEntry.arguments?.getString("xp")?.toInt() ?: 0
+                                val leveled = backStackEntry.arguments?.getString("leveled")?.toBoolean() ?: false
+
+                                RewardScreen(xp = xp, isLevelUp = leveled) {
+                                    navController.popBackStack("dashboard", inclusive = false)
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        soundManager?.pauseBgm()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        soundManager?.startBgm()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        soundManager?.release()
     }
 }
 
 @Composable
-fun BecomingApp() {
-    val navController = rememberNavController()
-    val viewModel: BecomingViewModel = viewModel()
+fun IntroVideoScreen(onFinished: () -> Unit) {
+    val context = LocalContext.current
+    val videoUri = Uri.parse("android.resource://${context.packageName}/${R.raw.intro}")
 
-    NavHost(navController = navController, startDestination = "onboarding") {
-
-        // 1. Onboarding Route: Collects Name, DOB, Traits, Goal, and Timeline
-        composable("onboarding") {
-            OnboardingScreen(
-                onComplete = { name, dob, traits, goal, timeline, path ->
-                    // Trigger Gemini to generate 3 personalized storylines!
-                    viewModel.initializeUserAndGenerateStories(name, dob, traits, goal, timeline, path)
-                    navController.navigate("story_selection") {
-                        popUpTo("onboarding") { inclusive = true }
-                    }
-                }
-            )
-        }
-
-        // 2. Story Selection Route: User picks or customizes their Grand Campaign
-        composable("story_selection") {
-            StorySelectionScreen(
-                viewModel = viewModel,
-                onStorySealed = {
-                    navController.navigate("dashboard") {
-                        popUpTo("story_selection") { inclusive = true }
-                    }
-                }
-            )
-        }
-
-        // 3. Dashboard Route: The Realm Map and Notice Board
-        composable("dashboard") {
-            DashboardScreen(
-                viewModel = viewModel,
-                onQuestSelected = { questId: String ->
-                    navController.navigate("quest/$questId")
-                },
-                onOpenInventory = {
-                    navController.navigate("inventory")
-                }
-            )
-        }
-
-        // Alchemist Inventory Route
-        composable("inventory") {
-            AlchemistInventoryScreen(
-                viewModel = viewModel,
-                onBack = { navController.popBackStack() }
-            )
-        }
-
-        // 4. Quest Loop Route: The 3-Phase Immersive Trial
-        composable("quest/{questId}") { backStackEntry ->
-            val questId = backStackEntry.arguments?.getString("questId")
-            val activeQuests by viewModel.activeQuests.collectAsState()
-            val quest = activeQuests.find { it.id == questId }
-
-            if (quest != null) {
-                QuestLoopScreen(
-                    quest = quest,
-                    onComplete = { xpReward: Int ->
-                        val leveledUp = viewModel.grantBounty(xpReward)
-                        navController.navigate("reward/${xpReward}/$leveledUp") {
-                            popUpTo("dashboard")
-                        }
-                    }
-                )
+    AndroidView(
+        modifier = Modifier.fillMaxSize().background(Color.Black),
+        factory = { ctx ->
+            VideoView(ctx).apply {
+                setVideoURI(videoUri)
+                setOnCompletionListener { onFinished() }
+                start()
             }
         }
-
-        // 5. Reward Route: The Dopamine Hit
-        composable("reward/{xp}/{leveled}") { backStackEntry ->
-            val xp = backStackEntry.arguments?.getString("xp")?.toInt() ?: 0
-            val leveled = backStackEntry.arguments?.getString("leveled")?.toBoolean() ?: false
-
-            RewardScreen(viewModel = viewModel, xp = xp, isLevelUp = leveled) {
-                navController.popBackStack("dashboard", inclusive = false)
-            }
-        }
-    }
+    )
 }
