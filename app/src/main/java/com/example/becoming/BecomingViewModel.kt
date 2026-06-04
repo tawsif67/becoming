@@ -1,103 +1,81 @@
 package com.example.becoming
 
-import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.ai.client.generativeai.GenerativeModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 
-// Data Models
-data class Quest(val id: String, val title: String, val desc: String, val xp: Int, val requiresProof: Boolean = false)
+// 1. Data Models (Quest must be Serializable for AI JSON parsing)
+@Serializable
+data class Quest(val id: String, val title: String, val desc: String, val xp: Int, val iconType: String)
 
 data class CharacterState(
     val name: String = "",
-    val heroClass: String = "Knight",
+    val heroClass: String = "Unknown",
     val level: Int = 1,
     val currentXp: Int = 0,
-    val traits: List<String> = emptyList(),
-    val campaignTitle: String = "The Iron Gauntlet",
+    val traits: Map<String, Float> = mapOf("Vitality" to 0.1f, "Focus" to 0.1f, "Discipline" to 0.1f, "Endurance" to 0.1f),
+    val campaignTitle: String = "",
     val campaignXp: Int = 0,
     val totalCampaignXp: Int = 30000,
-    val dailyProtein: Int = 0,
-    val dailyCarbs: Int = 0
+    val perceyMessage: String = "The stars are aligning...",
+    val isLoading: Boolean = false
 )
 
 class BecomingViewModel : ViewModel() {
-    private val geminiService = GeminiService()
-
     private val _charState = MutableStateFlow(CharacterState())
     val charState = _charState.asStateFlow()
 
-    private val _isProcessing = MutableStateFlow(false)
-    val isProcessing = _isProcessing.asStateFlow()
+    private val _activeQuests = MutableStateFlow<List<Quest>>(emptyList())
+    val activeQuests = _activeQuests.asStateFlow()
 
-    private val _alchemistResult = MutableStateFlow<AlchemistResult?>(null)
-    val alchemistResult = _alchemistResult.asStateFlow()
-
-    // Quests with proof requirements
-    val activeQuests = listOf(
-        Quest("1", "The Rune of Warding", "Deep focus for 25 mins.", 150),
-        Quest("2", "The Iron Forge", "Strength training at the anvil.", 200, requiresProof = true),
-        Quest("3", "The Long Fast", "16 hours of Monk's Discipline.", 300),
-        Quest("4", "The Morning Dew", "Drink a glass of water at sunrise.", 50, requiresProof = true)
+    // 2. Initialize the real Gemini AI Model securely
+    private val generativeModel = GenerativeModel(
+        modelName = "gemini-1.5-flash",
+        apiKey = BuildConfig.GEMINI_API_KEY // Pulls securely from local.properties
     )
 
-    fun initializeUser(name: String, path: String) {
-        _charState.update { it.copy(name = name, heroClass = path) }
-    }
-
-    fun analyzeMeal(bitmap: Bitmap) {
-        viewModelScope.launch {
-            _isProcessing.value = true
-            val result = geminiService.analyzeFood(bitmap)
-            _isProcessing.value = false
-            _alchemistResult.value = result
-            
-            result?.let {
-                _charState.update { state ->
-                    state.copy(
-                        dailyProtein = state.dailyProtein + it.proteinGrams,
-                        dailyCarbs = state.dailyCarbs + it.carbsGrams
-                    )
-                }
-                // Grant some minor XP for logging
-                grantBounty(25)
-            }
-        }
-    }
-
-    fun clearAlchemistResult() {
-        _alchemistResult.value = null
-    }
-
-    suspend fun verifyProof(bitmap: Bitmap, questTitle: String): Boolean {
-        _isProcessing.value = true
-        val verified = geminiService.verifyQuest(bitmap, questTitle)
-        _isProcessing.value = false
-        return verified
-    }
-
-    // Leveling Engine
-    fun grantBounty(xp: Int): Boolean {
-        var leveledUp = false
-        _charState.update { state ->
-            var newXp = state.currentXp + xp
-            var newLevel = state.level
-            val xpNeeded = state.level * 1000
-
-            if (newXp >= xpNeeded) {
-                newXp -= xpNeeded
-                newLevel++
-                leveledUp = true
-            }
-            state.copy(
-                level = newLevel,
-                currentXp = newXp,
-                campaignXp = state.campaignXp + xp
+    // 3. The Core AI Engine
+    fun initializeUserAndGenerateQuests(name: String, path: String, realLifeGoal: String) {
+        // Set loading state and initial data
+        _charState.update {
+            it.copy(
+                name = name,
+                heroClass = path,
+                campaignTitle = realLifeGoal,
+                isLoading = true,
+                perceyMessage = "Consulting the ancient grimoires to chart your destiny..."
             )
         }
-        return leveledUp
-    }
-}
+
+        viewModelScope.launch {
+            try {
+                // Task A: Generate Percey's Lore Greeting
+                val lorePrompt = "You are Percey, an ancient magical ledger keeper in a medieval RPG. Greet a new hero named $name who has chosen the path of the $path to achieve this real-life goal: '$realLifeGoal'. Keep it strictly to 2 short, epic, immersive sentences. Speak directly to the hero."
+                val loreResponse = generativeModel.generateContent(lorePrompt)
+
+                _charState.update { it.copy(perceyMessage = loreResponse.text?.trim() ?: "Welcome to the Realm, Hero.") }
+
+                // Task B: Generate Dynamic Quests formatted as JSON
+                val questPrompt = """
+                    You are the engine of a real-life habit tracker disguised as an RPG. 
+                    The user's real-life goal is: '$realLifeGoal'. They chose the class: '$path'.
+                    Generate exactly 3 specific, highly actionable real-world tasks they should do TODAY to move closer to this goal. 
+                    Return ONLY a raw JSON array of objects. Do not include markdown code blocks (like ```json).
+                    Each object must strictly have these exact keys:
+                    "id" (string: "1", "2", "3"),
+                    "title" (string: Epic medieval name for the task),
+                    "desc" (string: The actual real-world action they must take today),
+                    "xp" (integer: between 150 and 500 based on difficulty),
+                    "iconType" (string: either "strength", "focus", or "agility")
+                """.trimIndent()
+
+                val questResponse = generativeModel.generateContent(questPrompt)
+
+                // Clean the AI output and parse it
+                val rawJson = questResponse.text?.replace("

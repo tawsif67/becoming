@@ -25,46 +25,54 @@ fun BecomingApp() {
     val viewModel: BecomingViewModel = viewModel()
 
     NavHost(navController = navController, startDestination = "onboarding") {
+
+        // 1. Onboarding Route (Collects Name, Class, and Goal)
         composable("onboarding") {
             OnboardingScreen(
-                onComplete = { name, path ->
-                    viewModel.initializeUser(name, path)
-                    navController.navigate("dashboard") { popUpTo("onboarding") { inclusive = true } }
+                onComplete = { name: String, path: String, goal: String ->
+                    // Trigger the Gemini AI Call!
+                    viewModel.initializeUserAndGenerateQuests(name, path, goal)
+                    navController.navigate("dashboard") {
+                        popUpTo("onboarding") { inclusive = true }
+                    }
                 }
             )
         }
+
+        // 2. Dashboard Route
         composable("dashboard") {
             DashboardScreen(
                 viewModel = viewModel,
-                onQuestSelected = { questId -> navController.navigate("quest/$questId") },
-                onOpenInventory = { navController.navigate("inventory") }
+                onQuestSelected = { questId: String ->
+                    navController.navigate("quest/$questId")
+                }
             )
         }
-        composable("inventory") {
-            AlchemistInventoryScreen(
-                viewModel = viewModel,
-                onBack = { navController.popBackStack() }
-            )
-        }
+
+        // 3. Quest Loop Route
         composable("quest/{questId}") { backStackEntry ->
             val questId = backStackEntry.arguments?.getString("questId")
-            val quest = viewModel.activeQuests.find { it.id == questId }
+            val quest = viewModel.activeQuests.value.find { it.id == questId }
+
             if (quest != null) {
                 QuestLoopScreen(
                     quest = quest,
-                    viewModel = viewModel,
-                    onComplete = { xpReward ->
+                    onComplete = { xpReward: Int ->
+                        // Grant XP and check if user leveled up
                         val leveledUp = viewModel.grantBounty(xpReward)
-                        navController.navigate("reward/${xpReward}/$leveledUp") {
+                        navController.navigate("reward/${quest.xp}/$leveledUp") {
                             popUpTo("dashboard")
                         }
                     }
                 )
             }
         }
+
+        // 4. Reward / Level Up Route
         composable("reward/{xp}/{leveled}") { backStackEntry ->
             val xp = backStackEntry.arguments?.getString("xp")?.toInt() ?: 0
             val leveled = backStackEntry.arguments?.getString("leveled")?.toBoolean() ?: false
+
             RewardScreen(xp = xp, isLevelUp = leveled) {
                 navController.popBackStack("dashboard", inclusive = false)
             }
