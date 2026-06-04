@@ -4,6 +4,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.*
 import com.example.becoming.ui.theme.BecomingTheme
@@ -26,41 +28,64 @@ fun BecomingApp() {
 
     NavHost(navController = navController, startDestination = "onboarding") {
 
-        // 1. Onboarding Route (Collects Name, Class, and Goal)
+        // 1. Onboarding Route: Collects Name, DOB, Traits, Goal, and Timeline
         composable("onboarding") {
             OnboardingScreen(
-                onComplete = { name: String, path: String, goal: String ->
-                    // Trigger the Gemini AI Call!
-                    viewModel.initializeUserAndGenerateQuests(name, path, goal)
-                    navController.navigate("dashboard") {
+                onComplete = { name, dob, traits, goal, timeline, path ->
+                    // Trigger Gemini to generate 3 personalized storylines!
+                    viewModel.initializeUserAndGenerateStories(name, dob, traits, goal, timeline, path)
+                    navController.navigate("story_selection") {
                         popUpTo("onboarding") { inclusive = true }
                     }
                 }
             )
         }
 
-        // 2. Dashboard Route
+        // 2. Story Selection Route: User picks or customizes their Grand Campaign
+        composable("story_selection") {
+            StorySelectionScreen(
+                viewModel = viewModel,
+                onStorySealed = {
+                    navController.navigate("dashboard") {
+                        popUpTo("story_selection") { inclusive = true }
+                    }
+                }
+            )
+        }
+
+        // 3. Dashboard Route: The Realm Map and Notice Board
         composable("dashboard") {
             DashboardScreen(
                 viewModel = viewModel,
                 onQuestSelected = { questId: String ->
                     navController.navigate("quest/$questId")
+                },
+                onOpenInventory = {
+                    navController.navigate("inventory")
                 }
             )
         }
 
-        // 3. Quest Loop Route
+        // Alchemist Inventory Route
+        composable("inventory") {
+            AlchemistInventoryScreen(
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() }
+            )
+        }
+
+        // 4. Quest Loop Route: The 3-Phase Immersive Trial
         composable("quest/{questId}") { backStackEntry ->
             val questId = backStackEntry.arguments?.getString("questId")
-            val quest = viewModel.activeQuests.value.find { it.id == questId }
+            val activeQuests by viewModel.activeQuests.collectAsState()
+            val quest = activeQuests.find { it.id == questId }
 
             if (quest != null) {
                 QuestLoopScreen(
                     quest = quest,
                     onComplete = { xpReward: Int ->
-                        // Grant XP and check if user leveled up
                         val leveledUp = viewModel.grantBounty(xpReward)
-                        navController.navigate("reward/${quest.xp}/$leveledUp") {
+                        navController.navigate("reward/${xpReward}/$leveledUp") {
                             popUpTo("dashboard")
                         }
                     }
@@ -68,12 +93,12 @@ fun BecomingApp() {
             }
         }
 
-        // 4. Reward / Level Up Route
+        // 5. Reward Route: The Dopamine Hit
         composable("reward/{xp}/{leveled}") { backStackEntry ->
             val xp = backStackEntry.arguments?.getString("xp")?.toInt() ?: 0
             val leveled = backStackEntry.arguments?.getString("leveled")?.toBoolean() ?: false
 
-            RewardScreen(xp = xp, isLevelUp = leveled) {
+            RewardScreen(viewModel = viewModel, xp = xp, isLevelUp = leveled) {
                 navController.popBackStack("dashboard", inclusive = false)
             }
         }

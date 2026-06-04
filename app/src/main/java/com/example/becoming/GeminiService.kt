@@ -80,4 +80,13 @@ class GeminiService {
             false
         }
     }
+
+    suspend fun generateRawText(prompt: String): String? {
+        return try {
+            val response = model.generateContent(prompt)
+            response.text?.trim()?.removeSurrounding("```json", "```")
+        } catch (e: Exception) {
+            null
+        }
+    }
 }
