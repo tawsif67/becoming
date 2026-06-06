@@ -19,6 +19,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.*
 import com.example.becoming.ui.theme.BecomingTheme
+import com.example.becoming.util.Prefs
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     private var soundManager: SoundManager? = null
@@ -32,14 +34,15 @@ class MainActivity : ComponentActivity() {
                 val viewModel: BecomingViewModel = viewModel()
                 val context = LocalContext.current
                 
-                var isDataLoaded by remember { mutableStateOf(value = false) }
-                var startDestination by remember { mutableStateOf("onboarding") }
+                val charState by viewModel.charState.collectAsState()
                 var showVideo by remember { mutableStateOf(true) }
+                var hasInitialDataLoaded by remember { mutableStateOf(false) }
 
                 LaunchedEffect(Unit) {
-                    val onboardingComplete = viewModel.loadData(context)
-                    startDestination = if (onboardingComplete) "title_screen" else "onboarding"
-                    isDataLoaded = true
+                    viewModel.initialize(context)
+                    // Give Room a moment to hydrate
+                    delay(500)
+                    hasInitialDataLoaded = true
                 }
 
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -48,8 +51,7 @@ class MainActivity : ComponentActivity() {
                             showVideo = false
                             soundManager?.startBgm()
                         })
-                    } else if (isDataLoaded) {
-                        // --- GLOBAL PARCHMENT BACKGROUND ---
+                    } else if (hasInitialDataLoaded) {
                         Image(
                             painter = painterResource(id = R.drawable.bgi),
                             contentDescription = null,
@@ -58,7 +60,14 @@ class MainActivity : ComponentActivity() {
                         )
 
                         val navController = rememberNavController()
-                        val charState by viewModel.charState.collectAsState()
+
+                        LaunchedEffect(charState.isSoundEnabled) {
+                            soundManager?.syncSettings(charState.isSoundEnabled)
+                        }
+
+                        // Robust Onboarding Check via Prefs + Room State
+                        val onboardingFinished = Prefs.isOnboardingComplete(context) || charState.onboardingComplete
+                        val startDestination = if (onboardingFinished) "title_screen" else "onboarding"
 
                         NavHost(navController = navController, startDestination = startDestination) {
                             composable("onboarding") {
@@ -66,9 +75,21 @@ class MainActivity : ComponentActivity() {
                                     viewModel = viewModel,
                                     soundManager = soundManager,
                                     onComplete = {
-                                        viewModel.saveData(context)
-                                        navController.navigate("dashboard") { 
+                                        navController.navigate("story_selection") { 
                                             popUpTo("onboarding") { inclusive = true } 
+                                        }
+                                    }
+                                )
+                            }
+
+                            composable("story_selection") {
+                                StorySelectionScreen(
+                                    viewModel = viewModel,
+                                    soundManager = soundManager,
+                                    context = context,
+                                    onStorySealed = {
+                                        navController.navigate("dashboard") {
+                                            popUpTo("story_selection") { inclusive = true }
                                         }
                                     }
                                 )
@@ -91,7 +112,8 @@ class MainActivity : ComponentActivity() {
                                     viewModel = viewModel,
                                     soundManager = soundManager,
                                     onQuestSelected = { questId -> navController.navigate("quest/$questId") },
-                                    onCreateQuest = { navController.navigate("create_quest") }
+                                    onCreateQuest = { navController.navigate("create_quest") },
+                                    onOpenSettings = { navController.navigate("settings") }
                                 )
                             }
 
@@ -120,15 +142,16 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
-                            composable("reward/{xp}/{leveled}") { backStackEntry ->
-                                val xp = backStackEntry.arguments?.getString("xp")?.toInt() ?: 0
-                                val leveled = backStackEntry.arguments?.getString("leveled")?.toBoolean() ?: false
-
-                                RewardScreen(xp = xp, isLevelUp = leveled) {
-                                    navController.popBackStack("dashboard", inclusive = false)
-                                }
+                            composable("settings") {
+                                SettingsScreen(
+                                    viewModel = viewModel,
+                                    soundManager = soundManager,
+                                    onBack = { navController.popBackStack() }
+                                )
                             }
                         }
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize().background(Color.Black))
                     }
                 }
             }

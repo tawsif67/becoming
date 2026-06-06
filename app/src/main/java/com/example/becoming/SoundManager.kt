@@ -9,6 +9,7 @@ class SoundManager(private val context: Context) {
     private var soundPool: SoundPool
     private var clickSoundId: Int = 0
     private var bgmPlayer: MediaPlayer? = null
+    private var isSoundEnabled: Boolean = true
 
     init {
         val audioAttributes = AudioAttributes.Builder()
@@ -24,17 +25,28 @@ class SoundManager(private val context: Context) {
         clickSoundId = soundPool.load(context, R.raw.click, 1)
     }
 
+    fun syncSettings(enabled: Boolean) {
+        isSoundEnabled = enabled
+        if (!enabled) {
+            pauseBgm()
+        } else {
+            startBgm()
+        }
+    }
+
     fun playClick() {
-        if (clickSoundId != 0) {
+        if (isSoundEnabled && clickSoundId != 0) {
             soundPool.play(clickSoundId, 1f, 1f, 1, 0, 1f)
         }
     }
 
     fun startBgm() {
+        if (!isSoundEnabled) return
+        
         if (bgmPlayer == null) {
             bgmPlayer = MediaPlayer.create(context, R.raw.bgm).apply {
                 isLooping = true
-                setVolume(0.5f, 0.5f)
+                setVolume(0.4f, 0.4f)
                 start()
             }
         } else if (!bgmPlayer!!.isPlaying) {

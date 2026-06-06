@@ -36,6 +36,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.example.becoming.data.*
+import com.example.becoming.domain.*
+import com.example.becoming.ui.components.*
 import com.example.becoming.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -77,32 +80,13 @@ fun TypewriterText(text: String, style: TextStyle, color: Color) {
     OutlinedText(displayedText, style = style, color = color, textAlign = TextAlign.Center)
 }
 
-@Composable
-fun CampfireVideo(streakCount: Int, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    val videoUri = Uri.parse("android.resource://${context.packageName}/${R.raw.campfire_video}")
-    
-    if (streakCount == 0) {
-        OutlinedText("💨", style = MaterialTheme.typography.displayLarge, color = Color.Gray, modifier = modifier)
-    } else {
-        AndroidView(
-            modifier = modifier
-                .size(100.dp)
-                .clip(CircleShape),
-            factory = { ctx ->
-                VideoView(ctx).apply {
-                    setVideoURI(videoUri)
-                    setOnPreparedListener { mp ->
-                        mp.isLooping = true
-                        val duration = mp.duration
-                        val seekPos = ((streakCount.coerceIn(1, 30) - 1).toFloat() / 29f * duration).toInt()
-                        mp.seekTo(seekPos)
-                        start()
-                    }
-                }
-            }
-        )
-    }
+// --- HELPERS ---
+
+private fun String.toClassType(): ClassType = when (this.uppercase()) {
+    "MAGE" -> ClassType.MAGE
+    "ARTISAN" -> ClassType.ARTISAN
+    "RANGER" -> ClassType.RANGER
+    else -> ClassType.KNIGHT
 }
 
 // --- TITLE SCREEN ---
@@ -116,10 +100,14 @@ fun TitleScreen(state: CharacterState, soundManager: SoundManager?, onContinue: 
             
             Spacer(Modifier.height(80.dp))
             
-            CampfireVideo(streakCount = state.streakCount)
-            Spacer(Modifier.height(16.dp))
+            RuneSlate(
+                modifier = Modifier.width(240.dp),
+                streakStatus = if (state.campfireStreak == 0) List(7) { false } else List(7) { i -> i < (state.campfireStreak - 1) % 7 + 1 },
+                classTheme = state.heroClass.toClassType()
+            )
+            Spacer(Modifier.height(32.dp))
             
-            OutlinedText("Welcome back, ${state.name}", color = Color.LightGray, style = MaterialTheme.typography.bodyLarge)
+            OutlinedText("Welcome back, ${state.heroName}", color = Color.LightGray, style = MaterialTheme.typography.bodyLarge)
             OutlinedText("The ${state.heroClass}", color = AntiqueGold, style = MaterialTheme.typography.titleLarge)
             
             Spacer(Modifier.height(48.dp))
@@ -142,7 +130,7 @@ fun TitleScreen(state: CharacterState, soundManager: SoundManager?, onContinue: 
 }
 
 // --- ONBOARDING FLOW ---
-enum class OnboardingPhase { TITLE, POETIC1, POETIC2, POETIC3, POETIC4, POETIC5, POETIC6, NAME, TRAITS, QUIZ, DESTINY }
+enum class OnboardingPhase { TITLE, POETIC1, POETIC2, POETIC3, POETIC4, POETIC5, POETIC6, NAME, QUIZ, ATTRIBUTES, ACTIVITIES, CLASS_GATE, WAR_ROOM, CRUCIBLE, DESTINY }
 
 @Composable
 fun OnboardingScreen(viewModel: BecomingViewModel, soundManager: SoundManager?, onComplete: () -> Unit) {
@@ -153,15 +141,25 @@ fun OnboardingScreen(viewModel: BecomingViewModel, soundManager: SoundManager?, 
     
     val suggestedClass by viewModel.suggestedClass.collectAsState()
     val questions = viewModel.quizQuestions
-    val selectedTraits = remember { mutableStateListOf<TraitOption>() }
+    
+    // Selection States
+    val selectedAttributes = remember { mutableStateListOf<AttributeOption>() }
+    val selectedDisciplines = remember { mutableStateListOf<DisciplineOption>() }
+    
+    var highlightedAttribute by remember { mutableStateOf<AttributeOption?>(null) }
+    
+    val baselines = remember { mutableStateMapOf<String, Float>() }
+    val goals = remember { mutableStateMapOf<String, Float>() }
     
     var currentQuestionIndex by remember { mutableIntStateOf(0) }
     val collectedAnswers = remember { mutableStateListOf<QuizOption>() }
+    
+    var selectedGateClass by remember { mutableStateOf("KNIGHT") }
 
-    Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)))
         AnimatedContent(targetState = phase, label = "onboarding") { targetPhase ->
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth().padding(24.dp).verticalScroll(rememberScrollState())) {
                 when (targetPhase) {
                     OnboardingPhase.TITLE -> {
                         OutlinedText("BECOMING", style = MaterialTheme.typography.displayLarge, color = AntiqueGold)
@@ -250,55 +248,13 @@ fun OnboardingScreen(viewModel: BecomingViewModel, soundManager: SoundManager?, 
                             Button(onClick = { 
                                 soundManager?.playClick()
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                phase = OnboardingPhase.TRAITS 
+                                phase = OnboardingPhase.QUIZ 
                             }, colors = ButtonDefaults.buttonColors(containerColor = AntiqueGold)) { Text("Seal Name", color = DeepInkBlack) }
-                        }
-                    }
-                    OnboardingPhase.TRAITS -> {
-                        OutlinedText("CHOOSE YOUR ATTRIBUTES", style = MaterialTheme.typography.titleLarge, color = AntiqueGold)
-                        OutlinedText("Select 3 to 5 traits you wish to master.", style = MaterialTheme.typography.bodyLarge, color = ParchmentCream, textAlign = TextAlign.Center)
-                        Spacer(Modifier.height(24.dp))
-                        
-                        Column {
-                            viewModel.availableTraits.chunked(2).forEach { rowTraits ->
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 8.dp)) {
-                                    rowTraits.forEach { trait ->
-                                        val isSelected = selectedTraits.contains(trait)
-                                        Button(
-                                            onClick = {
-                                                soundManager?.playClick()
-                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                if (isSelected) selectedTraits.remove(trait)
-                                                else if (selectedTraits.size < 5) selectedTraits.add(trait)
-                                            },
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = if (isSelected) AntiqueGold else Color.Black.copy(alpha = 0.6f)
-                                            ),
-                                            modifier = Modifier.weight(1f)
-                                        ) { 
-                                            Text(trait.name, color = if(isSelected) DeepInkBlack else Color.LightGray, fontSize = 12.sp, textAlign = TextAlign.Center) 
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(24.dp))
-                        if (selectedTraits.size in 3..5) {
-                            Button(
-                                onClick = { 
-                                    soundManager?.playClick()
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    phase = OnboardingPhase.QUIZ 
-                                }, 
-                                colors = ButtonDefaults.buttonColors(containerColor = AntiqueGold)
-                            ) { Text("Lock Attributes", color = DeepInkBlack) }
-                        } else {
-                            OutlinedText("${selectedTraits.size} / 5 Selected", style = MaterialTheme.typography.bodyLarge, color = Color.LightGray)
                         }
                     }
                     OnboardingPhase.QUIZ -> {
                         val question = questions[currentQuestionIndex]
-                        OutlinedText("QUESTION ${currentQuestionIndex + 1} OF ${questions.size}", style = MaterialTheme.typography.labelSmall, color = AntiqueGold)
+                        OutlinedText("THE RITE OF PASSAGE", style = MaterialTheme.typography.labelSmall, color = AntiqueGold)
                         Spacer(Modifier.height(16.dp))
                         OutlinedText(question.text, style = MaterialTheme.typography.titleLarge, color = ParchmentCream, textAlign = TextAlign.Center)
                         Spacer(Modifier.height(32.dp))
@@ -312,8 +268,9 @@ fun OnboardingScreen(viewModel: BecomingViewModel, soundManager: SoundManager?, 
                                     if (currentQuestionIndex < questions.size - 1) {
                                         currentQuestionIndex++
                                     } else {
-                                        viewModel.calculateSuggestion(selectedTraits.toList(), collectedAnswers.toList())
-                                        phase = OnboardingPhase.DESTINY
+                                        viewModel.calculateSuggestion(selectedAttributes.toList(), collectedAnswers.toList())
+                                        selectedGateClass = viewModel.suggestedClass.value
+                                        phase = OnboardingPhase.ATTRIBUTES
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color.Black.copy(alpha = 0.7f)),
@@ -321,44 +278,273 @@ fun OnboardingScreen(viewModel: BecomingViewModel, soundManager: SoundManager?, 
                             ) { Text(opt.text, color = ParchmentCream, textAlign = TextAlign.Center) }
                         }
                     }
-                    OnboardingPhase.DESTINY -> {
-                        OutlinedText("THE STARS HAVE SPOKEN", style = MaterialTheme.typography.labelSmall, color = AntiqueGold)
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedText("The Stars suggest you are a $suggestedClass", style = MaterialTheme.typography.displayLarge, color = ParchmentCream, textAlign = TextAlign.Center)
+                    OnboardingPhase.ATTRIBUTES -> {
+                        OutlinedText("THE SELECTION OF ATTRIBUTES", style = MaterialTheme.typography.titleLarge, color = AntiqueGold)
+                        Spacer(Modifier.height(24.dp))
+                        
+                        Column {
+                            viewModel.premiumAttributes.chunked(2).forEach { row ->
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    row.forEach { attr ->
+                                        val isSelected = selectedAttributes.contains(attr)
+                                        val isHighlighted = highlightedAttribute == attr
+                                        Card(
+                                            modifier = Modifier.weight(1f).aspectRatio(1f).clickable {
+                                                soundManager?.playClick()
+                                                highlightedAttribute = attr
+                                            }.border(2.dp, if(isSelected) AntiqueGold else if(isHighlighted) Color.White else Color.Transparent, RoundedCornerShape(8.dp)),
+                                            colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.6f))
+                                        ) {
+                                            Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                                                Icon(attr.icon, contentDescription = null, tint = if(isSelected) AntiqueGold else Color.Gray, modifier = Modifier.size(40.dp))
+                                                Text(attr.name, color = if(isSelected) AntiqueGold else Color.White, fontSize = 10.sp, textAlign = TextAlign.Center)
+                                            }
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(8.dp))
+                            }
+                        }
+                        
+                        Spacer(Modifier.height(16.dp))
+                        highlightedAttribute?.let { attr ->
+                            val isSelected = selectedAttributes.contains(attr)
+                            Box(modifier = Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.4f)).padding(16.dp)) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(attr.description, color = ParchmentCream, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium)
+                                    Spacer(Modifier.height(8.dp))
+                                    Button(
+                                        onClick = {
+                                            soundManager?.playClick()
+                                            if (isSelected) selectedAttributes.remove(attr) else selectedAttributes.add(attr)
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = if(isSelected) CrimsonRed else AntiqueGold)
+                                    ) { Text(if(isSelected) "Remove" else "Add", color = if(isSelected) Color.White else DeepInkBlack) }
+                                }
+                            }
+                        }
+                        
+                        Spacer(Modifier.height(24.dp))
+                        if (selectedAttributes.isNotEmpty()) {
+                            Button(onClick = { 
+                                soundManager?.playClick()
+                                phase = OnboardingPhase.ACTIVITIES 
+                            }, colors = ButtonDefaults.buttonColors(containerColor = ForestGreen), modifier = Modifier.fillMaxWidth()) { 
+                                Text("Venture to the Forge (${selectedAttributes.size} Chosen)", color = Color.White) 
+                            }
+                        }
+                    }
+                    OnboardingPhase.ACTIVITIES -> {
+                        Box(modifier = Modifier.fillMaxWidth().background(AntiqueGold).padding(8.dp)) {
+                            Text("Select your Disciplines (${selectedDisciplines.size}/10)", color = DeepInkBlack, fontWeight = FontWeight.Black, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        
+                        Column {
+                            selectedAttributes.forEach { attr ->
+                                OutlinedText(attr.name.uppercase(), style = MaterialTheme.typography.labelSmall, color = AntiqueGold)
+                                Spacer(Modifier.height(8.dp))
+                                viewModel.disciplineRegistry.filter { it.attributeCategory == attr.name }.forEach { disc ->
+                                    val isSelected = selectedDisciplines.contains(disc)
+                                    val isMaxed = selectedDisciplines.size >= 10 && !isSelected
+                                    
+                                    Card(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable(enabled = !isMaxed) {
+                                            soundManager?.playClick()
+                                            if (isSelected) selectedDisciplines.remove(disc) else selectedDisciplines.add(disc)
+                                        }.graphicsLayer { alpha = if(isMaxed) 0.4f else 1.0f },
+                                        colors = CardDefaults.cardColors(containerColor = if(isSelected) ForestGreen else Color.Black.copy(alpha = 0.4f)),
+                                        border = BorderStroke(1.dp, if(isSelected) Color.White else Color.Gray)
+                                    ) {
+                                        Text(disc.name, color = Color.White, modifier = Modifier.padding(12.dp), fontSize = 14.sp)
+                                    }
+                                }
+                                Spacer(Modifier.height(24.dp))
+                            }
+                        }
+                        
+                        if (selectedDisciplines.isNotEmpty()) {
+                            Button(onClick = { 
+                                soundManager?.playClick()
+                                phase = OnboardingPhase.CLASS_GATE 
+                            }, colors = ButtonDefaults.buttonColors(containerColor = AntiqueGold), modifier = Modifier.fillMaxWidth()) { 
+                                Text("Seal the Disciplines", color = DeepInkBlack) 
+                            }
+                        }
+                    }
+                    OnboardingPhase.CLASS_GATE -> {
+                        val descriptor = ClassLexicons.get(selectedGateClass)
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(descriptor.icon, contentDescription = null, tint = AntiqueGold, modifier = Modifier.size(120.dp))
+                                Spacer(Modifier.height(32.dp))
+                                TypewriterText(descriptor.title, MaterialTheme.typography.displayMedium, AntiqueGold)
+                                Spacer(Modifier.height(16.dp))
+                                Text(
+                                    descriptor.description,
+                                    color = ParchmentCream,
+                                    textAlign = TextAlign.Center,
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                                Spacer(Modifier.height(48.dp))
+                                Button(
+                                    onClick = { 
+                                        soundManager?.playClick()
+                                        phase = OnboardingPhase.WAR_ROOM 
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = AntiqueGold)
+                                ) { Text(descriptor.commitmentText, color = DeepInkBlack) }
+                                
+                                Spacer(Modifier.height(16.dp))
+                                TextButton(onClick = { 
+                                    selectedGateClass = when(selectedGateClass) {
+                                        "KNIGHT" -> "MAGE"
+                                        "MAGE" -> "ARTISAN"
+                                        "ARTISAN" -> "RANGER"
+                                        else -> "KNIGHT"
+                                    }
+                                }) { Text("Change Path", color = Color.Gray) }
+                            }
+                        }
+                    }
+                    OnboardingPhase.WAR_ROOM -> {
+                        val descriptor = ClassLexicons.get(selectedGateClass)
+                        OutlinedText(descriptor.magnitudeTitle, style = MaterialTheme.typography.displaySmall, color = AntiqueGold, textAlign = TextAlign.Center)
                         Spacer(Modifier.height(32.dp))
                         
-                        var selectedClass by remember { mutableStateOf(suggestedClass) }
-                        val classes = listOf("Knight", "Mage", "Artisan", "Ranger")
-                        
-                        classes.forEach { cls ->
-                            Card(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { 
-                                    soundManager?.playClick()
-                                    selectedClass = cls
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                },
-                                colors = CardDefaults.cardColors(containerColor = if(selectedClass == cls) AntiqueGold else Color.Black.copy(alpha = 0.6f)),
-                                border = BorderStroke(1.dp, Color.Gray)
-                            ) {
-                                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Text(cls, color = if(selectedClass == cls) DeepInkBlack else ParchmentCream, style = MaterialTheme.typography.titleLarge)
-                                    if (cls == suggestedClass) {
-                                        Spacer(Modifier.width(8.dp))
-                                        Text("(Recommended)", color = if(selectedClass == cls) DeepInkBlack.copy(alpha=0.6f) else AntiqueGold, style = MaterialTheme.typography.labelSmall)
+                        Column {
+                            selectedDisciplines.forEach { disc ->
+                                val config = getTacticalConfig(disc.name)
+                                baselines.putIfAbsent(disc.name, 5f)
+                                goals.putIfAbsent(disc.name, 10f)
+                                
+                                Card(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.5f)),
+                                    border = BorderStroke(1.dp, AntiqueGold.copy(alpha = 0.3f))
+                                ) {
+                                    Column(Modifier.padding(16.dp)) {
+                                        Text(disc.name, color = AntiqueGold, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
+                                        Spacer(Modifier.height(16.dp))
+                                        
+                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                            Column(Modifier.weight(1f)) {
+                                                Text("BASELINE", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                                                when (config.tool) {
+                                                    TacticalTool.LD -> LogisticsDial("Start", config.unit, baselines[disc.name] ?: 5f) { baselines[disc.name] = it }
+                                                    TacticalTool.AM -> ArchiveMeter("Start", baselines[disc.name] ?: 0f) { baselines[disc.name] = it }
+                                                    TacticalTool.HG -> HourglassGauge("Mins", baselines[disc.name] ?: 15f) { baselines[disc.name] = it }
+                                                    TacticalTool.LT -> LedgerToggle("Done?", (baselines[disc.name] ?: 0f) > 0f) { baselines[disc.name] = if(it) 1f else 0f }
+                                                    TacticalTool.TG -> ThresholdGauge("Start", baselines[disc.name] ?: 20f) { baselines[disc.name] = it }
+                                                }
+                                            }
+                                            Spacer(Modifier.width(32.dp))
+                                            Column(Modifier.weight(1f)) {
+                                                Text("ULTIMATE", color = AntiqueGold, style = MaterialTheme.typography.labelSmall)
+                                                when (config.tool) {
+                                                    TacticalTool.LD -> LogisticsDial("Goal", config.unit, goals[disc.name] ?: 20f) { goals[disc.name] = it }
+                                                    TacticalTool.AM -> ArchiveMeter("Goal", goals[disc.name] ?: 30f) { goals[disc.name] = it }
+                                                    TacticalTool.HG -> HourglassGauge("Mins", goals[disc.name] ?: 60f) { goals[disc.name] = it }
+                                                    TacticalTool.LT -> Text("Goal Set", color = Color.Gray)
+                                                    TacticalTool.TG -> ThresholdGauge("Goal", goals[disc.name] ?: 80f) { goals[disc.name] = it }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                         
-                        Spacer(Modifier.height(32.dp))
+                        Spacer(Modifier.height(48.dp))
                         Button(
                             onClick = { 
                                 soundManager?.playClick()
-                                viewModel.selectClassAndGenerateStories(name, selectedClass, selectedTraits.map { it.name }, context)
-                                onComplete()
+                                phase = OnboardingPhase.CRUCIBLE 
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = ForestGreen)
+                        ) { Text("FORGE YOUR DESTINY", color = Color.White) }
+                    }
+                    OnboardingPhase.CRUCIBLE -> {
+                        val descriptor = ClassLexicons.get(selectedGateClass)
+                        var crucibleIndex by remember { mutableIntStateOf(0) }
+                        
+                        LaunchedEffect(Unit) {
+                            while(crucibleIndex < descriptor.crucibleLines.size - 1) {
+                                delay(2000)
+                                crucibleIndex++
+                            }
+                            delay(2000)
+                            phase = OnboardingPhase.DESTINY
+                        }
+                        
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                val tint = when(selectedGateClass) {
+                                    "KNIGHT" -> CrimsonRed
+                                    "MAGE" -> RoyalBlue
+                                    "ARTISAN" -> AntiqueGold
+                                    else -> ForestGreen
+                                }
+                                Icon(Icons.Default.Whatshot, contentDescription = null, tint = tint, modifier = Modifier.size(100.dp))
+                                Spacer(Modifier.height(32.dp))
+                                TypewriterText(descriptor.crucibleLines[crucibleIndex], MaterialTheme.typography.titleLarge, ParchmentCream)
+                            }
+                        }
+                    }
+                    OnboardingPhase.DESTINY -> {
+                        val descriptor = ClassLexicons.get(selectedGateClass)
+                        OutlinedText("THE STARS HAVE SPOKEN", style = MaterialTheme.typography.labelSmall, color = AntiqueGold)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedText("Your Grand Campaign: ${descriptor.campaignTitle}", style = MaterialTheme.typography.displayLarge, color = ParchmentCream, textAlign = TextAlign.Center)
+                        Spacer(Modifier.height(32.dp))
+                        
+                        // CLASS SELECTION TILES
+                        val classes = listOf("KNIGHT", "MAGE", "ARTISAN", "RANGER")
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            classes.forEach { cls ->
+                                val clsDesc = ClassLexicons.get(cls)
+                                val isRecommended = cls == viewModel.suggestedClass.value
+                                Card(
+                                    modifier = Modifier.fillMaxWidth().clickable { 
+                                        soundManager?.playClick()
+                                        selectedGateClass = cls 
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    },
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if(selectedGateClass == cls) AntiqueGold else Color.Black.copy(alpha = 0.6f)
+                                    ),
+                                    border = BorderStroke(2.dp, if(isRecommended) RoyalBlue else Color.Gray)
+                                ) {
+                                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(clsDesc.icon, contentDescription = null, tint = if(selectedGateClass == cls) DeepInkBlack else AntiqueGold, modifier = Modifier.size(32.dp))
+                                        Spacer(Modifier.width(16.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(cls, color = if(selectedGateClass == cls) DeepInkBlack else ParchmentCream, style = MaterialTheme.typography.titleLarge)
+                                            if (isRecommended) Text("Stars Recommend", color = if(selectedGateClass == cls) DeepInkBlack.copy(alpha=0.7f) else AntiqueGold, style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        Spacer(Modifier.height(48.dp))
+                        val scope = rememberCoroutineScope()
+                        Button(
+                            onClick = { 
+                                soundManager?.playClick()
+                                scope.launch {
+                                    viewModel.finalizeCharacterAndCampaign(
+                                        name, selectedGateClass, 
+                                        selectedAttributes.map { it.name }, 
+                                        baselines.toMap(), goals.toMap(), 
+                                        context
+                                    )
+                                    onComplete()
+                                }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().height(56.dp)
                         ) { Text("Seal My Path", color = ParchmentCream) }
                     }
                 }
@@ -414,6 +600,7 @@ fun CustomQuestScreen(viewModel: BecomingViewModel, soundManager: SoundManager?,
     
     var baseTask by remember { mutableStateOf("") }
     var timeScale by remember { mutableStateOf("DAILY") }
+    var selectedAttr by remember { mutableStateOf(state.selectedAttributeNames.firstOrNull() ?: "Mindfulness") }
 
     Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
         Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.3f)))
@@ -435,7 +622,7 @@ fun CustomQuestScreen(viewModel: BecomingViewModel, soundManager: SoundManager?,
                     if (it.length > baseTask.length) soundManager?.playClick()
                     baseTask = it 
                 },
-                modifier = Modifier.fillMaxWidth().height(150.dp),
+                modifier = Modifier.fillMaxWidth().height(120.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = AntiqueGold, 
                     focusedTextColor = ParchmentCream, 
@@ -446,7 +633,20 @@ fun CustomQuestScreen(viewModel: BecomingViewModel, soundManager: SoundManager?,
                 placeholder = { Text("e.g., Draft the methodology chapter, or run 5km.", color = Color.Gray) }
             )
 
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(24.dp))
+
+            OutlinedText("Target Domain", color = AntiqueGold, style = MaterialTheme.typography.labelSmall, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+            Column(modifier = Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.4f)).padding(8.dp)) {
+                state.selectedAttributeNames.forEach { attr ->
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { selectedAttr = attr; soundManager?.playClick() }) {
+                        RadioButton(selected = selectedAttr == attr, onClick = { selectedAttr = attr; soundManager?.playClick() }, colors = RadioButtonDefaults.colors(selectedColor = AntiqueGold))
+                        Text(attr, color = if(selectedAttr == attr) AntiqueGold else Color.Gray)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
 
             OutlinedText("Magnitude of the Trial", color = AntiqueGold, style = MaterialTheme.typography.labelSmall, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(16.dp))
@@ -477,7 +677,7 @@ fun CustomQuestScreen(viewModel: BecomingViewModel, soundManager: SoundManager?,
                     if (baseTask.isNotBlank()) {
                         soundManager?.playClick()
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.addCustomQuest(baseTask, timeScale)
+                        viewModel.addCustomQuest(baseTask, timeScale, selectedAttr)
                         onBack()
                     }
                 },
@@ -494,9 +694,15 @@ fun CustomQuestScreen(viewModel: BecomingViewModel, soundManager: SoundManager?,
     }
 }
 
-// --- DASHBOARD (THE REALM) ---
+// --- DASHBOARD ---
 @Composable
-fun DashboardScreen(viewModel: BecomingViewModel, soundManager: SoundManager?, onQuestSelected: (String) -> Unit, onCreateQuest: () -> Unit) {
+fun DashboardScreen(
+    viewModel: BecomingViewModel, 
+    soundManager: SoundManager?, 
+    onQuestSelected: (String) -> Unit, 
+    onCreateQuest: () -> Unit,
+    onOpenSettings: () -> Unit
+) {
     val state by viewModel.charState.collectAsState()
     val activeQuests by viewModel.activeQuests.collectAsState()
     val haptic = LocalHapticFeedback.current
@@ -504,14 +710,19 @@ fun DashboardScreen(viewModel: BecomingViewModel, soundManager: SoundManager?, o
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
 
-            // 1. Level Progress (Animated XP Whoosh)
+            // 1. Level Progress
             Box(modifier = Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.85f)).padding(24.dp)) {
                 Column {
-                    OutlinedText("LEVEL PROGRESS", style = MaterialTheme.typography.bodyLarge, color = AntiqueGold)
-                    OutlinedText("TO LVL ${state.level + 1}", style = MaterialTheme.typography.titleLarge, color = ParchmentCream)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedText("LEVEL PROGRESS", style = MaterialTheme.typography.bodyLarge, color = AntiqueGold, modifier = Modifier.weight(1f))
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(Icons.Default.Settings, contentDescription = "The Armory", tint = AntiqueGold)
+                        }
+                    }
+                    OutlinedText("TO LVL ${state.globalLevel + 1}", style = MaterialTheme.typography.titleLarge, color = ParchmentCream)
                     Spacer(Modifier.height(16.dp))
                     
-                    val xpNeeded = state.level * 1000
+                    val xpNeeded = state.globalLevel * 1000
                     val targetProgress = state.currentXp.toFloat() / xpNeeded.toFloat()
                     val animatedProgress by animateFloatAsState(
                         targetValue = targetProgress,
@@ -530,31 +741,77 @@ fun DashboardScreen(viewModel: BecomingViewModel, soundManager: SoundManager?, o
 
             Spacer(Modifier.height(16.dp))
 
-            // 2. Character Header & Campfire Streak
+            // 2. Character Header
             Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(modifier = Modifier.size(64.dp).background(AntiqueGold, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
-                    OutlinedText("LVL\n${state.level}", style = MaterialTheme.typography.titleLarge, color = DeepInkBlack, textAlign = TextAlign.Center)
+                    OutlinedText("LVL\n${state.globalLevel}", style = MaterialTheme.typography.titleLarge, color = DeepInkBlack, textAlign = TextAlign.Center)
                 }
                 Spacer(Modifier.width(16.dp))
                 Column(Modifier.weight(1f)) {
-                    OutlinedText(state.name, style = MaterialTheme.typography.displayLarge, color = DeepInkBlack)
+                    OutlinedText(state.heroName, style = MaterialTheme.typography.displayLarge, color = DeepInkBlack)
                     OutlinedText("The ${state.heroClass}", color = Color.DarkGray, style = MaterialTheme.typography.bodyLarge)
                 }
                 
-                CampfireVideo(streakCount = state.streakCount)
+                RuneSlate(
+                    modifier = Modifier.width(180.dp),
+                    streakStatus = if (state.campfireStreak == 0) List(7) { false } else List(7) { i -> i < (state.campfireStreak - 1) % 7 + 1 },
+                    classTheme = state.heroClass.toClassType()
+                )
             }
-            if (state.streakCount > 0) {
-                OutlinedText("${state.streakCount} DAY STREAK", style = MaterialTheme.typography.labelSmall, color = CrimsonRed, modifier = Modifier.padding(start = 16.dp))
+            if (state.campfireStreak > 0) {
+                OutlinedText("${state.campfireStreak} DAY STREAK", style = MaterialTheme.typography.labelSmall, color = CrimsonRed, modifier = Modifier.padding(start = 16.dp))
             }
 
             Spacer(Modifier.height(32.dp))
 
-            // 3. The Ledger of Tasks
+            // 3. Attributes (Domains of Mastery)
+            if (state.selectedAttributeNames.isNotEmpty()) {
+                OutlinedText("DOMAINS OF MASTERY", style = MaterialTheme.typography.titleLarge, color = DeepInkBlack, modifier = Modifier.padding(horizontal = 16.dp))
+                Spacer(Modifier.height(8.dp))
+                
+                Column(Modifier.padding(horizontal = 16.dp)) {
+                    state.selectedAttributeNames.forEach { attrName ->
+                        val xpValue = when(attrName) {
+                            "Physical Fitness" -> state.attrPhysicalFitness
+                            "Mental Focus" -> state.attrMentalFocus
+                            "Financial Wealth" -> state.attrFinancialWealth
+                            "Creative Output" -> state.attrCreativeOutput
+                            "Social Charisma" -> state.attrSocialCharisma
+                            "Emotional Resilience" -> state.attrEmotionalResilience
+                            "Deep Knowledge" -> state.attrDeepKnowledge
+                            "Career Growth" -> state.attrCareerGrowth
+                            "Mindfulness" -> state.attrMindfulness
+                            "Physical Endurance" -> state.attrPhysicalEndurance
+                            else -> 0f
+                        }
+                        val level = (xpValue / 1000).toInt() + 1
+                        val progress = (xpValue % 1000) / 1000f
+
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
+                            Column(Modifier.weight(1f)) {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text(attrName, color = DeepInkBlack, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                                    Text("LVL $level", color = DeepInkBlack, style = MaterialTheme.typography.bodySmall)
+                                }
+                                LinearProgressIndicator(
+                                    progress = { progress },
+                                    modifier = Modifier.fillMaxWidth().height(4.dp).clip(CircleShape),
+                                    color = AntiqueGold,
+                                    trackColor = Color.LightGray.copy(alpha = 0.3f)
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(32.dp))
+            }
+
+            // 4. The Ledger of Tasks
             OutlinedText("THE LEDGER OF TASKS", style = MaterialTheme.typography.titleLarge, color = DeepInkBlack, modifier = Modifier.padding(horizontal = 16.dp))
             Spacer(Modifier.height(8.dp))
 
             activeQuests.forEachIndexed { index, quest ->
-                val tilt = remember(quest.id) { listOf(-2f, 1f, -1.5f, 2f, 0.5f).random() }
+                val tilt = remember(quest.id) { listOf(-1.5f, 1f, -0.5f, 1.5f, 0.5f).random() }
                 val questRarityColor = when {
                     quest.xp >= 300 -> AntiqueGold
                     quest.xp >= 200 -> RoyalBlue
@@ -564,9 +821,9 @@ fun DashboardScreen(viewModel: BecomingViewModel, soundManager: SoundManager?, o
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
                         .graphicsLayer { rotationZ = tilt }
-                        .shadow(elevation = 12.dp, shape = RoundedCornerShape(4.dp))
+                        .shadow(elevation = 8.dp, shape = RoundedCornerShape(4.dp))
                         .clickable {
                             soundManager?.playClick()
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -577,23 +834,26 @@ fun DashboardScreen(viewModel: BecomingViewModel, soundManager: SoundManager?, o
                     border = BorderStroke(2.dp, questRarityColor)
                 ) {
                     Box {
+                        // --- PIN (RED DOT) ---
                         Box(
                             modifier = Modifier
-                                .size(16.dp)
+                                .size(12.dp)
                                 .align(Alignment.TopCenter)
-                                .offset(y = (-8).dp)
+                                .offset(y = (-6).dp)
                                 .background(CrimsonRed, CircleShape)
-                                .border(2.dp, AntiqueGold.copy(alpha = 0.5f), CircleShape)
+                                .border(1.dp, AntiqueGold.copy(alpha = 0.5f), CircleShape)
                         )
 
-                        Row(Modifier.padding(16.dp).padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.padding(16.dp).padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             val icon = when(quest.iconType) { "gps" -> Icons.Default.Map; "tap" -> Icons.Default.PanTool; "camera" -> Icons.Default.CameraAlt; "timer" -> Icons.Default.HourglassEmpty; else -> Icons.Default.Bedtime }
                             Icon(icon, contentDescription = null, tint = DeepInkBlack)
                             Spacer(Modifier.width(16.dp))
-                                Column(Modifier.weight(1f)) {
-                                val questFlavor = viewModel.generateQuestNarrative(state.heroClass, quest.baseTask, quest.timeScale)
-                                Text(questFlavor.title, style = MaterialTheme.typography.titleLarge, color = DeepInkBlack, fontSize = 20.sp)
-                                Text(quest.baseTask, color = Color.DarkGray, fontSize = 14.sp)
+                            Column(Modifier.weight(1f)) {
+                                val questFlavor = viewModel.generateQuestNarrative(quest)
+                                Text(questFlavor.title, style = MaterialTheme.typography.titleLarge, color = DeepInkBlack, fontSize = 18.sp)
+                                Text(questFlavor.narrativeDesc, color = Color.DarkGray, fontSize = 13.sp)
+                                Spacer(Modifier.height(4.dp))
+                                Text("BOUNTY: ${quest.targetValue} ${quest.unit}", color = DeepInkBlack, fontWeight = FontWeight.Black, fontSize = 12.sp)
                             }
                             Text("+${quest.xp}", color = questRarityColor, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
                         }
@@ -601,14 +861,7 @@ fun DashboardScreen(viewModel: BecomingViewModel, soundManager: SoundManager?, o
                 }
             }
             
-            Spacer(Modifier.height(48.dp))
-            
-            Column(modifier = Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                OutlinedText("Created by Md. Tawsif Mostafiz", style = MaterialTheme.typography.bodyLarge, color = Color.DarkGray)
-                OutlinedText("All Rights Reserved", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-            }
-            
-            Spacer(Modifier.height(100.dp)) // Space for FAB
+            Spacer(Modifier.height(100.dp))
         }
 
         FloatingActionButton(
@@ -625,16 +878,98 @@ fun DashboardScreen(viewModel: BecomingViewModel, soundManager: SoundManager?, o
     }
 }
 
+// --- SETTINGS SCREEN ---
+@Composable
+fun SettingsScreen(viewModel: BecomingViewModel, soundManager: SoundManager?, onBack: () -> Unit) {
+    val charState by viewModel.charState.collectAsState()
+    val context = LocalContext.current
+
+    Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)))
+        Column(
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Spacer(Modifier.height(32.dp))
+            OutlinedText("THE ARMORY", style = MaterialTheme.typography.displayLarge, color = AntiqueGold)
+            OutlinedText("Manage your ledger and gear.", style = MaterialTheme.typography.bodyLarge, color = ParchmentCream)
+            
+            Spacer(Modifier.height(48.dp))
+
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.7f)),
+                border = BorderStroke(1.dp, AntiqueGold)
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text("Mystic Echoes", style = MaterialTheme.typography.titleLarge, color = AntiqueGold)
+                        Text("Toggle background music and effects.", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Switch(
+                        checked = charState.isSoundEnabled,
+                        onCheckedChange = { 
+                            soundManager?.playClick()
+                            viewModel.toggleSound(context) 
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = AntiqueGold,
+                            checkedTrackColor = ForestGreen,
+                            uncheckedThumbColor = Color.Gray,
+                            uncheckedTrackColor = DeepSlate
+                        )
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(48.dp))
+
+            OutlinedText("ABOUT THE LEDGER", style = MaterialTheme.typography.titleLarge, color = AntiqueGold)
+            Spacer(Modifier.height(16.dp))
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                OutlinedText("Created by Md. Tawsif Mostafiz", style = MaterialTheme.typography.bodyLarge, color = ParchmentCream)
+                OutlinedText("All Rights Reserved", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+            }
+
+            Spacer(Modifier.height(64.dp))
+
+            Button(
+                onClick = { viewModel.resetProgress(context) },
+                colors = ButtonDefaults.buttonColors(containerColor = CrimsonRed),
+                modifier = Modifier.fillMaxWidth().height(56.dp)
+            ) {
+                Text("RESET CHRONICLE (DANGER)", color = Color.White)
+            }
+
+            Spacer(Modifier.height(16.dp))
+            
+            Button(
+                onClick = { 
+                    soundManager?.playClick()
+                    onBack() 
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = AntiqueGold),
+                modifier = Modifier.fillMaxWidth().height(56.dp)
+            ) {
+                Text("Return to the Realm", color = DeepInkBlack)
+            }
+        }
+    }
+}
+
 // --- QUEST LOOP ---
 @Composable
-fun QuestLoopScreen(quest: Quest, viewModel: BecomingViewModel, soundManager: SoundManager?, onComplete: () -> Unit) {
+fun QuestLoopScreen(quest: QuestEntity, viewModel: BecomingViewModel, soundManager: SoundManager?, onComplete: () -> Unit) {
     var phase by remember { mutableIntStateOf(0) }
     var actualProgress by remember { mutableIntStateOf(0) }
     val haptic = LocalHapticFeedback.current
-    val context = LocalContext.current
     val state by viewModel.charState.collectAsState()
 
-    val flavor = remember(quest.id) { viewModel.generateQuestNarrative(state.heroClass, quest.baseTask, quest.timeScale) }
+    val flavor = remember(quest.id) { viewModel.generateQuestNarrative(quest) }
 
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.4f)))
@@ -657,21 +992,26 @@ fun QuestLoopScreen(quest: Quest, viewModel: BecomingViewModel, soundManager: So
                     )
                 }
                 1 -> { // Trial
-                    when (quest.type) {
-                        QuestType.TIMER -> TimerPhase(quest.targetValue, soundManager) { progress -> 
+                    // Interactive Phases
+                    val qType = when(quest.associatedTrait) {
+                        "Physical Endurance" -> QuestType.TIMER
+                        "Physical Fitness" -> QuestType.REPS
+                        "Mental Focus" -> QuestType.TIMER
+                        "Deep Knowledge" -> QuestType.TIMER
+                        else -> QuestType.CHECK
+                    }
+
+                    when (qType) {
+                        QuestType.TIMER -> TimerPhase(if(quest.targetValue > 0) quest.targetValue else 30, soundManager) { progress -> 
                             actualProgress = progress
                             phase = 2 
                         }
-                        QuestType.REPS -> RepsPhase(quest.targetValue, soundManager) { progress -> 
-                            actualProgress = progress
-                            phase = 2 
-                        }
-                        QuestType.INPUT -> InputPhase(quest.targetValue, quest.unit, soundManager) { progress -> 
+                        QuestType.REPS -> RepsPhase(if(quest.targetValue > 0) quest.targetValue else 10, soundManager) { progress -> 
                             actualProgress = progress
                             phase = 2 
                         }
                         else -> CheckPhase(soundManager) { 
-                            actualProgress = quest.targetValue
+                            actualProgress = 1
                             phase = 2 
                         }
                     }
@@ -703,7 +1043,7 @@ fun QuestLoopScreen(quest: Quest, viewModel: BecomingViewModel, soundManager: So
                             onClick = { 
                                 soundManager?.playClick()
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.grantPartialBounty(quest, actualProgress, context)
+                                viewModel.grantBounty(quest.id, quest.xp)
                                 onComplete() 
                             }, 
                             colors = ButtonDefaults.buttonColors(containerColor = ForestGreen), 
@@ -716,64 +1056,7 @@ fun QuestLoopScreen(quest: Quest, viewModel: BecomingViewModel, soundManager: So
     }
 }
 
-@Composable
-fun HoldToCommitButton(text: String, onCommitted: () -> Unit) {
-    var isPressed by remember { mutableStateOf(false) }
-    var progress by remember { mutableFloatStateOf(0f) }
-    val haptic = LocalHapticFeedback.current
-
-    LaunchedEffect(isPressed) {
-        if (isPressed) {
-            val startTime = System.currentTimeMillis()
-            val duration = 2000L
-            while (isPressed && progress < 1f) {
-                progress = ((System.currentTimeMillis() - startTime).toFloat() / duration).coerceAtMost(1f)
-                if (progress > 0.1f) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                delay(16)
-            }
-            if (progress >= 1f) {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                onCommitted()
-            }
-        } else {
-            progress = 0f
-        }
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(56.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color.Black.copy(alpha = 0.5f))
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onPress = {
-                        isPressed = true
-                        try {
-                            awaitRelease()
-                        } finally {
-                            isPressed = false
-                        }
-                    }
-                )
-            },
-        contentAlignment = Alignment.Center
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(progress)
-                .fillMaxHeight()
-                .background(CrimsonRed.copy(alpha = 0.9f))
-                .align(Alignment.CenterStart)
-        )
-        Text(
-            text = text, 
-            style = MaterialTheme.typography.titleLarge, 
-            color = if (progress > 0.5f) ParchmentCream else AntiqueGold
-        )
-    }
-}
+// --- SUB-PHASES ---
 
 @Composable
 fun TimerPhase(minutes: Int, soundManager: SoundManager?, onDone: (Int) -> Unit) {
@@ -847,44 +1130,10 @@ fun RepsPhase(target: Int, soundManager: SoundManager?, onDone: (Int) -> Unit) {
                 soundManager?.playClick()
                 onDone(current) 
             }, 
-            colors = ButtonDefaults.buttonColors(containerColor = if (current >= target) ForestGreen else Color.Black.copy(alpha = 0.7f))
+            colors = ButtonDefaults.buttonColors(containerColor = if (current >= target) ForestGreen else Color.Black.copy(alpha = 0.6f))
         ) { 
             Text(if (current >= target) "Trial Concluded" else "End Early", color = ParchmentCream) 
         }
-    }
-}
-
-@Composable
-fun InputPhase(target: Int, unit: String, soundManager: SoundManager?, onDone: (Int) -> Unit) {
-    var value by remember { mutableStateOf("") }
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        OutlinedText("THE LEDGER ENTRY", style = MaterialTheme.typography.titleLarge, color = AntiqueGold)
-        Spacer(Modifier.height(48.dp))
-        OutlinedTextField(
-            value = value, 
-            onValueChange = { 
-                if (it.all { char -> char.isDigit() }) {
-                    if (it.length > value.length) soundManager?.playClick()
-                    value = it 
-                }
-            }, 
-            label = { Text("How many $unit completed?", color = AntiqueGold) },
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = ParchmentCream, 
-                unfocusedTextColor = ParchmentCream,
-                focusedContainerColor = Color.Black.copy(alpha = 0.5f)
-            ),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-        )
-        Spacer(Modifier.height(32.dp))
-        Button(
-            onClick = { 
-                soundManager?.playClick()
-                onDone(value.toIntOrNull() ?: 0) 
-            },
-            enabled = value.isNotBlank(),
-            colors = ButtonDefaults.buttonColors(containerColor = ForestGreen)
-        ) { Text("Record Progress", color = ParchmentCream) }
     }
 }
 
@@ -904,7 +1153,6 @@ fun CheckPhase(soundManager: SoundManager?, onDone: () -> Unit) {
     }
 }
 
-// --- REWARD SCREEN ---
 @Composable
 fun RewardScreen(xp: Int, isLevelUp: Boolean, onBack: () -> Unit) {
     val haptic = LocalHapticFeedback.current
@@ -926,8 +1174,67 @@ fun RewardScreen(xp: Int, isLevelUp: Boolean, onBack: () -> Unit) {
             OutlinedText("+$displayXp XP", style = MaterialTheme.typography.displayLarge, color = if(isLevelUp) DeepInkBlack else ParchmentCream, modifier = Modifier.graphicsLayer { scaleX = 1.5f; scaleY = 1.5f })
             Spacer(Modifier.height(48.dp))
             Button(onClick = onBack, colors = ButtonDefaults.buttonColors(containerColor = if(isLevelUp) DeepInkBlack else AntiqueGold)) { 
-                Text("Return to Realm", color = if(isLevelUp) AntiqueGold else DeepInkBlack)
+                Text("Return to Realm", color = if(isLevelUp) AntiqueGold else DeepInkBlack) 
             }
         }
+    }
+}
+
+@Composable
+fun HoldToCommitButton(text: String, onCommitted: () -> Unit) {
+    var isPressed by remember { mutableStateOf(false) }
+    var progress by remember { mutableFloatStateOf(0f) }
+    val haptic = LocalHapticFeedback.current
+
+    LaunchedEffect(isPressed) {
+        if (isPressed) {
+            val startTime = System.currentTimeMillis()
+            val duration = 2000L
+            while (isPressed && progress < 1f) {
+                progress = ((System.currentTimeMillis() - startTime).toFloat() / duration).coerceAtMost(1f)
+                if (progress > 0.1f) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                delay(16)
+            }
+            if (progress >= 1f) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onCommitted()
+            }
+        } else {
+            progress = 0f
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color.Black.copy(alpha = 0.5f))
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = {
+                        isPressed = true
+                        try {
+                            awaitRelease()
+                        } finally {
+                            isPressed = false
+                        }
+                    }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(progress)
+                .fillMaxHeight()
+                .background(CrimsonRed.copy(alpha = 0.9f))
+                .align(Alignment.CenterStart)
+        )
+        Text(
+            text = text, 
+            style = MaterialTheme.typography.titleLarge, 
+            color = if (progress > 0.5f) ParchmentCream else AntiqueGold
+        )
     }
 }

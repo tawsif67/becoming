@@ -1,19 +1,18 @@
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    // CHANGE 1.9.0 to 2.2.10
-    id("org.jetbrains.kotlin.plugin.serialization") version "2.2.10"
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.kotlin.serialization)
 }
 android {
     namespace = "com.example.becoming"
-
-    // CHANGE THIS: Use a stable SDK version
     compileSdk = 36
 
     defaultConfig {
         applicationId = "com.example.becoming"
-        minSdk = 26 // Increased to 26 as required by the AI SDK
-        targetSdk = 34 // Changed to 34
+        minSdk = 26 
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0"
 
@@ -22,21 +21,24 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false // Fixed syntax for Kotlin DSL
+            isMinifyEnabled = false 
         }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+    kotlinOptions {
+        jvmTarget = "11"
+    }
     buildFeatures {
         compose = true
     }
 }
 
-// Keep your dependencies block exactly as you have it!
-
 dependencies {
+    val room_version = "2.7.0-alpha11"
+
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
@@ -52,16 +54,14 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
-    // Compose Navigation
+    
     implementation("androidx.navigation:navigation-compose:2.7.7")
-
-// Extended Icons (for Swords, Maps, etc.)
     implementation("androidx.compose.material:material-icons-extended")
-
-// Gemini AI SDK
     implementation("com.google.ai.client.generativeai:generativeai:0.6.0")
-
-// Kotlin Serialization (for parsing AI JSON)
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
-}
 
+    // Room
+    implementation("androidx.room:room-runtime:$room_version")
+    implementation("androidx.room:room-ktx:$room_version")
+    ksp("androidx.room:room-compiler:$room_version")
+}

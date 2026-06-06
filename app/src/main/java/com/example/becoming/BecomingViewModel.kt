@@ -1,77 +1,66 @@
 package com.example.becoming
 
 import android.content.Context
+import android.util.Log
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.ViewModel
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
+import androidx.lifecycle.viewModelScope
+import com.example.becoming.data.*
+import com.example.becoming.domain.*
+import com.example.becoming.util.Prefs
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlin.math.roundToInt
 
-// --- CORE MODELS ---
-enum class QuestType { TIMER, REPS, CHECK, INPUT, GPS }
+// --- UI MODELS ---
+data class AttributeOption(
+    val name: String,
+    val description: String,
+    val icon: ImageVector,
+    val kPts: Int,
+    val mPts: Int,
+    val aPts: Int,
+    val rPts: Int
+)
 
-@Serializable
-data class TraitOption(val name: String, val kPts: Int, val mPts: Int, val aPts: Int, val rPts: Int)
+data class DisciplineOption(
+    val name: String,
+    val attributeCategory: String
+)
 
-@Serializable
 data class QuizOption(val text: String, val knightPts: Int, val magePts: Int, val artisanPts: Int, val rangerPts: Int, val timelineMoons: Int = 0)
-
-@Serializable
 data class QuizQuestion(val text: String, val options: List<QuizOption>)
 
-@Serializable
-data class CampaignStory(val id: String, var title: String, var loreSummary: String, val totalRequiredXp: Int)
-
-@Serializable
-data class Quest(
-    val id: String, 
-    val path: String, 
-    val baseTask: String, 
-    val xp: Int, 
-    val iconType: String,
-    val type: QuestType,
-    val targetValue: Int, 
-    val unit: String = "",
-    val timeScale: String = "DAILY"
-)
-
-@Serializable
-data class QuestFlavor(
-    val title: String,
-    val narrativeDesc: String,
-    val aftermathLore: String
-)
-
-@Serializable
 data class CharacterState(
-    val name: String = "",
+    val heroName: String = "",
     val heroClass: String = "Unknown",
-    val level: Int = 1,
+    val globalLevel: Int = 1,
     val currentXp: Int = 0,
     val totalCampaignXp: Int = 0,
+    val campfireStreak: Int = 0,
+    // Attributes Values
+    val attrPhysicalFitness: Float = 0f,
+    val attrMentalFocus: Float = 0f,
+    val attrFinancialWealth: Float = 0f,
+    val attrCreativeOutput: Float = 0f,
+    val attrSocialCharisma: Float = 0f,
+    val attrEmotionalResilience: Float = 0f,
+    val attrDeepKnowledge: Float = 0f,
+    val attrCareerGrowth: Float = 0f,
+    val attrMindfulness: Float = 0f,
+    val attrPhysicalEndurance: Float = 0f,
+    val selectedAttributeNames: List<String> = emptyList(),
+    val onboardingComplete: Boolean = false,
     val activeCampaign: CampaignStory? = null,
-    val traits: List<String> = emptyList(),
-    val showPathIntro: Boolean = true,
-    val streakCount: Int = 0,
-    val lastLoginMillis: Long = 0,
-    val onboardingComplete: Boolean = false
-)
-
-// --- LEXICON MODELS ---
-data class ClassLexicon(
-    val title: String,
-    val dailyHooks: List<String>,
-    val weeklyHooks: List<String>,
-    val monthlyHooks: List<String>,
-    val actions: List<String>,
-    val enemies: List<String>,
-    val victories: List<String>
+    val isSoundEnabled: Boolean = true
 )
 
 class BecomingViewModel : ViewModel() {
+    private var database: BecomingDatabase? = null
+
     private val _charState = MutableStateFlow(CharacterState())
     val charState = _charState.asStateFlow()
 
@@ -84,309 +73,444 @@ class BecomingViewModel : ViewModel() {
     private val _generatedStories = MutableStateFlow<List<CampaignStory>>(emptyList())
     val generatedStories = _generatedStories.asStateFlow()
 
-    private val _activeQuests = MutableStateFlow<List<Quest>>(emptyList())
+    private val _activeQuests = MutableStateFlow<List<QuestEntity>>(emptyList())
     val activeQuests = _activeQuests.asStateFlow()
 
-    private val jsonParser = Json { ignoreUnknownKeys = true; isLenient = true }
-
-    // --- LEXICONS ---
-    private val mageLexicon = ClassLexicon(
-        title = "Mage",
-        dailyHooks = listOf("The tower is perfectly quiet.", "The latent features of the realm are shifting.", "A faint trace of corrupted logic echoes in the halls."),
-        weeklyHooks = listOf("A hidden backdoor in the network has been triggered!", "The minor council demands your findings.", "The architecture of the spell is destabilizing!"),
-        monthlyHooks = listOf("The Grand Tribunal has convened.", "The Abyssal Network has launched an assault on reality.", "The fabric of the realm requires intervention."),
-        actions = listOf("unlearn the corruption", "apply a general regularizer effect", "isolate the complex variables", "decipher the mechanistic runes"),
-        enemies = listOf("corrupted algorithms", "noise in the system", "the shadow network"),
-        victories = listOf("The logic is pure once more.", "You have mapped the unknown.", "Your intellect acts as a shield.")
-    )
-
-    private val knightLexicon = ClassLexicon(
-        title = "Knight",
-        dailyHooks = listOf("The perimeter is quiet, but the air is cold.", "The armory smells of oil and iron.", "The dawn breaks, demanding your sweat."),
-        weeklyHooks = listOf("A scouting party has breached the valley!", "The Vanguard is moving out.", "A storm approaches; the walls must be tested."),
-        monthlyHooks = listOf("The Obsidian Beast has finally descended.", "The Great Siege begins at dawn.", "The warlord has challenged you to combat."),
-        actions = listOf("strike with relentless force", "fortify the line", "outlast the onslaught", "march until your boots wear thin"),
-        enemies = listOf("the encroaching horde", "the beast's fire", "your own breaking point"),
-        victories = listOf("The line held because of you.", "You outran the shadows.", "Your physical mastery is undeniable.")
-    )
-
-    private val artisanLexicon = ClassLexicon(
-        title = "Artisan",
-        dailyHooks = listOf("The workshop is silent, waiting for your touch.", "Dust motes dance in the morning light.", "Your tools are laid out in perfect order."),
-        weeklyHooks = listOf("A patron has requested a masterwork.", "The market demands innovation.", "Your vision is beginning to take shape."),
-        monthlyHooks = listOf("The Exhibition of Ages is approaching.", "Your masterpiece is halfway finished.", "The creative well is deep and full."),
-        actions = listOf("carve your vision into reality", "forge beauty from raw chaos", "stitch the blueprint together", "polish every detail until it shines"),
-        enemies = listOf("the demon of resistance", "the fog of procrastination", "the internal critic"),
-        victories = listOf("You brought beauty into the world.", "The craft has been elevated.", "Your work speaks for itself.")
-    )
-
-    private val rangerLexicon = ClassLexicon(
-        title = "Ranger",
-        dailyHooks = listOf("The forest floor is damp and fragrant.", "The wind whispers secrets through the trees.", "Your spirit is grounded in the earth."),
-        weeklyHooks = listOf("The boundaries of the wild are shifting.", "A new trail has revealed itself.", "The shadows in the woods are deepening."),
-        monthlyHooks = listOf("The Great Migration has begun.", "You must guide the lost back to the light.", "The mountain peak calls to you."),
-        actions = listOf("track the subtle signs", "center your soul in the silence", "breathe with the rhythm of nature", "navigate the uncharted terrain"),
-        enemies = listOf("the city's toxic hum", "the weight of urban stress", "the loss of focus"),
-        victories = listOf("You found peace in the chaos.", "The wild has accepted you.", "Your spirit is free and clear.")
-    )
-
-    private val lexicons = mapOf("Mage" to mageLexicon, "Knight" to knightLexicon, "Artisan" to artisanLexicon, "Ranger" to rangerLexicon)
-
     // --- 10 PREMIUM ATTRIBUTES ---
-    val availableTraits = listOf(
-        TraitOption("Physical Fitness", kPts = 3, mPts = 0, aPts = 0, rPts = 1),
-        TraitOption("Mental Focus", kPts = 0, mPts = 3, aPts = 1, rPts = 0),
-        TraitOption("Financial Wealth", kPts = 0, mPts = 2, aPts = 2, rPts = 0),
-        TraitOption("Creative Output", kPts = 0, mPts = 0, aPts = 3, rPts = 0),
-        TraitOption("Social Charisma", kPts = 1, mPts = 1, aPts = 1, rPts = 0),
-        TraitOption("Emotional Resilience", kPts = 1, mPts = 0, aPts = 0, rPts = 3),
-        TraitOption("Deep Knowledge", kPts = 0, mPts = 3, aPts = 0, rPts = 0),
-        TraitOption("Career Growth", kPts = 0, mPts = 2, aPts = 1, rPts = 0),
-        TraitOption("Mindfulness", kPts = 0, mPts = 0, aPts = 0, rPts = 3),
-        TraitOption("Physical Endurance", kPts = 2, mPts = 0, aPts = 0, rPts = 2)
+    val premiumAttributes = listOf(
+        AttributeOption("Physical Fitness", "Forge your body into an unbreakable vessel of power, strength, and vitality.", Icons.Default.FitnessCenter, 3, 0, 0, 1),
+        AttributeOption("Mental Focus", "Sharpen your mind to pierce through distractions and sustain unbroken concentration.", Icons.Default.Psychology, 0, 3, 1, 0),
+        AttributeOption("Financial Wealth", "Master the flow of resources to build an empire of stability and ultimate freedom.", Icons.Default.AccountBalanceWallet, 0, 2, 2, 0),
+        AttributeOption("Creative Output", "Channel your inner spark into tangible artifacts, transforming thoughts into masterpieces.", Icons.Default.Brush, 0, 0, 3, 0),
+        AttributeOption("Social Charisma", "Cultivate a magnetic presence to lead, connect deeply, and inspire those around you.", Icons.Default.Groups, 1, 1, 1, 0),
+        AttributeOption("Emotional Resilience", "Build an inner fortress that remains unshaken by the chaotic storms of life.", Icons.Default.Shield, 1, 0, 0, 3),
+        AttributeOption("Deep Knowledge", "Expand the archives of your mind through relentless curiosity and rigorous study.", Icons.Default.MenuBook, 0, 3, 0, 0),
+        AttributeOption("Career Growth", "Command your professional domain, level up your skills, and ascend the ranks.", Icons.Default.TrendingUp, 0, 2, 1, 0),
+        AttributeOption("Mindfulness", "Anchor your spirit in the present moment, dissolving the noise of the waking world.", Icons.Default.SelfImprovement, 0, 0, 0, 3),
+        AttributeOption("Physical Endurance", "Expand the limits of your heart and lungs to outlast any challenge placed before you.", Icons.Default.DirectionsRun, 2, 0, 0, 2)
     )
 
-    // --- 20 PREMIUM FLAGSHIP QUESTS ---
+    // --- 100 PREMIUM DISCIPLINES ---
+    val disciplineRegistry = listOf(
+        DisciplineOption("Weightlifting / Powerlifting", "Physical Fitness"),
+        DisciplineOption("Calisthenics (Bodyweight training)", "Physical Fitness"),
+        DisciplineOption("Bouldering / Rock Climbing", "Physical Fitness"),
+        DisciplineOption("High-Intensity Interval Training (HIIT)", "Physical Fitness"),
+        DisciplineOption("Power Yoga / Core training", "Physical Fitness"),
+        DisciplineOption("Martial Arts (Striking)", "Physical Fitness"),
+        DisciplineOption("Brazilian Jiu-Jitsu / Grappling", "Physical Fitness"),
+        DisciplineOption("Gymnastics / Mobility work", "Physical Fitness"),
+        DisciplineOption("Pilates", "Physical Fitness"),
+        DisciplineOption("Team Sports (Soccer, Basketball, etc.)", "Physical Fitness"),
+        
+        DisciplineOption("Pomodoro Work Sessions", "Mental Focus"),
+        DisciplineOption("Digital Detox (Zero-screen time blocks)", "Mental Focus"),
+        DisciplineOption("Chess / Strategy Games", "Mental Focus"),
+        DisciplineOption("Deep Work Blocks (2+ hours uninterrupted)", "Mental Focus"),
+        DisciplineOption("Dual N-Back / Cognitive Brain Training", "Mental Focus"),
+        DisciplineOption("Single-tasking practice", "Mental Focus"),
+        DisciplineOption("Learning complex patterns / choreography", "Mental Focus"),
+        DisciplineOption("Solving complex logic puzzles (Sudoku, etc.)", "Mental Focus"),
+        DisciplineOption("Speed reading practice", "Mental Focus"),
+        DisciplineOption("Fasting for mental clarity", "Mental Focus"),
+
+        DisciplineOption("Daily/Weekly Budget Tracking", "Financial Wealth"),
+        DisciplineOption("Stock Market / Index Fund Investing", "Financial Wealth"),
+        DisciplineOption("Building a Side Hustle / Freelancing", "Financial Wealth"),
+        DisciplineOption("Reading Financial / Economic Literature", "Financial Wealth"),
+        DisciplineOption("Auditing and cutting unnecessary expenses", "Financial Wealth"),
+        DisciplineOption("Building an Emergency Fund", "Financial Wealth"),
+        DisciplineOption("Real Estate / Market Research", "Financial Wealth"),
+        DisciplineOption("Crypto / Web3 Education", "Financial Wealth"),
+        DisciplineOption("Negotiation practice for salary/rates", "Financial Wealth"),
+        DisciplineOption("Selling unused physical assets", "Financial Wealth"),
+
+        DisciplineOption("Creative Writing / Fiction Journaling", "Creative Output"),
+        DisciplineOption("Drawing / Sketching / Painting", "Creative Output"),
+        DisciplineOption("Digital Design (UI/UX, Graphic Design)", "Creative Output"),
+        DisciplineOption("Playing a Musical Instrument", "Creative Output"),
+        DisciplineOption("Music Production / Beatmaking", "Creative Output"),
+        DisciplineOption("Coding a personal/passion project", "Creative Output"),
+        DisciplineOption("Photography", "Creative Output"),
+        DisciplineOption("Videography / Video Editing", "Creative Output"),
+        DisciplineOption("Crafting / Woodworking / DIY", "Creative Output"),
+        DisciplineOption("3D Modeling / Animation", "Creative Output"),
+
+        DisciplineOption("Public Speaking (e.g., Toastmasters)", "Social Charisma"),
+        DisciplineOption("Attending Networking Events", "Social Charisma"),
+        DisciplineOption("Initiating conversations with strangers", "Social Charisma"),
+        DisciplineOption("Hosting dinners or social gatherings", "Social Charisma"),
+        DisciplineOption("Active Listening exercises", "Social Charisma"),
+        DisciplineOption("Reconnecting with old friends/family", "Social Charisma"),
+        DisciplineOption("Mentoring or teaching someone", "Social Charisma"),
+        DisciplineOption("Volunteering in the community", "Social Charisma"),
+        DisciplineOption("Taking acting or improv classes", "Social Charisma"),
+        DisciplineOption("Debate / Persuasion practice", "Social Charisma"),
+
+        DisciplineOption("Stoic Journaling (Reflecting on challenges)", "Emotional Resilience"),
+        DisciplineOption("Cold Exposure / Ice Baths", "Emotional Resilience"),
+        DisciplineOption("Therapy or Counseling sessions", "Emotional Resilience"),
+        DisciplineOption("Daily Gratitude logging", "Emotional Resilience"),
+        DisciplineOption("Shadow Work / Deep Self-reflection", "Emotional Resilience"),
+        DisciplineOption("Rejection Therapy (Actively seeking minor rejections)", "Emotional Resilience"),
+        DisciplineOption("Practicing positive reframing of negative events", "Emotional Resilience"),
+        DisciplineOption("Identifying and breaking cognitive distortions", "Emotional Resilience"),
+        DisciplineOption("Voluntary Discomfort (e.g., sleeping on the floor)", "Emotional Resilience"),
+        DisciplineOption("Anger management / Pause-and-reflect exercises", "Emotional Resilience"),
+
+        DisciplineOption("Reading Non-Fiction Books", "Deep Knowledge"),
+        DisciplineOption("Academic Research / Reading Whitepapers", "Deep Knowledge"),
+        DisciplineOption("Learning a New Language (Duolingo, tutoring)", "Deep Knowledge"),
+        DisciplineOption("Taking Online Courses (Coursera, edX)", "Deep Knowledge"),
+        DisciplineOption("Watching Educational Documentaries", "Deep Knowledge"),
+        DisciplineOption("Listening to Long-form Educational Podcasts", "Deep Knowledge"),
+        DisciplineOption("Flashcard / Spaced Repetition Study (Anki)", "Deep Knowledge"),
+        DisciplineOption("Writing synthesis essays or blog posts on learned topics", "Deep Knowledge"),
+        DisciplineOption("Attending academic lectures or seminars", "Deep Knowledge"),
+        DisciplineOption("Decoding complex systems (e.g., Machine Unlearning architectures)", "Deep Knowledge"),
+
+        DisciplineOption("Updating CV / Professional Portfolio", "Career Growth"),
+        DisciplineOption("Applying for new roles, PhDs, or programs", "Career Growth"),
+        DisciplineOption("Pitching to new clients / Lead generation", "Career Growth"),
+        DisciplineOption("Studying for Professional Certifications", "Career Growth"),
+        DisciplineOption("LinkedIn networking and content posting", "Career Growth"),
+        DisciplineOption("Seeking active feedback from managers/advisors", "Career Growth"),
+        DisciplineOption("Mentoring junior colleagues or students", "Career Growth"),
+        DisciplineOption("Learning industry-specific software", "Career Growth"),
+        DisciplineOption("Preparing and practicing for interviews", "Career Growth"),
+        DisciplineOption("Shadowing a senior leader or professor", "Career Growth"),
+
+        DisciplineOption("Breathwork (Wim Hof, Box Breathing)", "Mindfulness"),
+        DisciplineOption("Nature Walks (Without technology)", "Mindfulness"),
+        DisciplineOption("Guided Meditation (Headspace, Waking Up)", "Mindfulness"),
+        DisciplineOption("Mindful Eating (No screens during meals)", "Mindfulness"),
+        DisciplineOption("Restorative / Yin Yoga", "Mindfulness"),
+        DisciplineOption("Sound Baths / Binaural Beats sessions", "Mindfulness"),
+        DisciplineOption("Stargazing or Cloud watching", "Mindfulness"),
+        DisciplineOption("Minimalist decluttering of physical space", "Mindfulness"),
+        DisciplineOption("Dream journaling", "Mindfulness"),
+        DisciplineOption("Body Scan Meditation", "Mindfulness"),
+
+        DisciplineOption("Running / Jogging", "Physical Endurance"),
+        DisciplineOption("Long-distance Cycling", "Physical Endurance"),
+        DisciplineOption("Swimming", "Physical Endurance"),
+        DisciplineOption("Rucking (Hiking with a weighted pack)", "Physical Endurance"),
+        DisciplineOption("Rowing (Machine or water)", "Physical Endurance"),
+        DisciplineOption("Hiking / Mountaineering", "Physical Endurance"),
+        DisciplineOption("Jump Rope / Skipping", "Physical Endurance"),
+        DisciplineOption("Stair climbing", "Physical Endurance"),
+        DisciplineOption("Marathon / Triathlon training prep", "Physical Endurance"),
+        DisciplineOption("Dance Cardio", "Physical Endurance")
+    )
+
     private val allFlagshipQuests = listOf(
         // KNIGHT
-        Quest("k1", "Knight", "Endurance Run", 250, "gps", QuestType.TIMER, 30, "min"),
-        Quest("k2", "Knight", "Strength Training", 300, "tap", QuestType.REPS, 10, "sets"),
-        Quest("k3", "Knight", "Macro Scanner", 150, "camera", QuestType.CHECK, 0),
-        Quest("k4", "Knight", "HIIT Cardio", 350, "timer", QuestType.TIMER, 20, "min"),
-        Quest("k5", "Knight", "Deep Sleep", 100, "rest", QuestType.CHECK, 8, "hours"),
+        QuestEntity("k1", "KNIGHT", "Endurance Run", "DAILY", "Physical Endurance", "ACTIVE", 0, "map_1", 30, "min", 250, "gps"),
+        QuestEntity("k2", "KNIGHT", "Strength Training", "DAILY", "Physical Fitness", "ACTIVE", 0, "map_1", 10, "sets", 300, "tap"),
+        QuestEntity("k3", "KNIGHT", "Macro Scanner", "DAILY", "Mindfulness", "ACTIVE", 0, "map_1", 0, "", 150, "camera"),
+        QuestEntity("k4", "KNIGHT", "HIIT Cardio", "WEEKLY", "Physical Endurance", "ACTIVE", 0, "map_1", 20, "min", 350, "timer"),
+        QuestEntity("k5", "KNIGHT", "Deep Sleep", "DAILY", "Mindfulness", "ACTIVE", 0, "map_1", 8, "hours", 100, "rest"),
         // MAGE
-        Quest("m1", "Mage", "Deep Work Session", 300, "timer", QuestType.TIMER, 45, "min"),
-        Quest("m2", "Mage", "Active Reading", 250, "rest", QuestType.INPUT, 30, "pages"),
-        Quest("m3", "Mage", "Skill Practice", 150, "tap", QuestType.REPS, 10, "reps"),
-        Quest("m4", "Mage", "Daily Journal", 200, "rest", QuestType.CHECK, 0),
-        Quest("m5", "Mage", "Digital Detox", 100, "rest", QuestType.TIMER, 60, "min"),
-        // ARTISAN
-        Quest("a1", "Artisan", "Creative Flow", 300, "timer", QuestType.TIMER, 60, "min"),
-        Quest("a2", "Artisan", "Micro-Habit", 150, "tap", QuestType.TIMER, 10, "min"),
-        Quest("a3", "Artisan", "Inspiration Capture", 200, "camera", QuestType.CHECK, 3, "notes"),
-        Quest("a4", "Artisan", "Project Blueprint", 250, "rest", QuestType.CHECK, 0),
-        Quest("a5", "Artisan", "Gratitude Log", 100, "rest", QuestType.CHECK, 3, "items"),
-        // RANGER
-        Quest("r1", "Ranger", "10k Steps", 250, "gps", QuestType.GPS, 10000, "steps"),
-        Quest("r2", "Ranger", "Guided Breathwork", 200, "timer", QuestType.TIMER, 10, "min"),
-        Quest("r3", "Ranger", "Outdoor Immersion", 300, "gps", QuestType.TIMER, 30, "min"),
-        Quest("r4", "Ranger", "Evening Reflection", 150, "rest", QuestType.CHECK, 0),
-        Quest("r5", "Ranger", "Clean Fuel Scanner", 100, "camera", QuestType.CHECK, 0)
+        QuestEntity("m1", "MAGE", "Deep Work Session", "DAILY", "Mental Focus", "ACTIVE", 0, "map_2", 45, "min", 300, "timer"),
+        QuestEntity("m2", "MAGE", "Active Reading", "DAILY", "Deep Knowledge", "ACTIVE", 0, "map_2", 30, "pages", 250, "rest"),
+        QuestEntity("m3", "MAGE", "Skill Practice", "DAILY", "Deep Knowledge", "ACTIVE", 0, "map_2", 15, "min", 150, "tap"),
+        QuestEntity("m4", "MAGE", "Daily Journal", "WEEKLY", "Emotional Resilience", "ACTIVE", 0, "map_2", 0, "", 200, "rest"),
+        QuestEntity("m5", "MAGE", "Digital Detox", "DAILY", "Mental Focus", "ACTIVE", 0, "map_2", 60, "min", 100, "rest")
     )
 
     val quizQuestions = listOf(
-        QuizQuestion("What is your primary goal for this journey?", listOf(
-            QuizOption("Build physical strength and unmatched fitness.", 3, 0, 0, 0),
-            QuizOption("Expand my knowledge and accelerate my career.", 0, 3, 0, 0),
-            QuizOption("Create a masterpiece or build a business.", 0, 0, 3, 0),
-            QuizOption("Improve mental health and explore the world.", 0, 0, 0, 3),
-            QuizOption("I want a balance of everything.", 1, 1, 1, 1)
+        QuizQuestion("How many winters have you survived?", listOf(
+            QuizOption("Less than 20 winters.", 0, 0, 0, 0),
+            QuizOption("20 to 30 winters.", 0, 0, 0, 0),
+            QuizOption("Over 30 winters.", 0, 0, 0, 0)
         )),
-        QuizQuestion("How do you prefer to tackle a difficult challenge?", listOf(
-            QuizOption("Head-on with raw force and discipline.", 3, 0, 0, 0),
-            QuizOption("Analyze the problem and research a solution.", 0, 3, 0, 0),
-            QuizOption("Design a creative workaround.", 0, 0, 3, 0),
-            QuizOption("Adapt to the situation and maneuver past it.", 0, 0, 0, 3)
+        QuizQuestion("A heavy Greatsword lies before you. Do you...", listOf(
+            QuizOption("Wield it with raw force.", 3, 0, 0, 0),
+            QuizOption("Study its balance and history.", 0, 2, 0, 1),
+            QuizOption("Recast it into a finer blade.", 0, 0, 3, 0)
         )),
-        QuizQuestion("In your free time, where would you rather be?", listOf(
-            QuizOption("In the gym, arena, or on the field.", 3, 0, 0, 0),
-            QuizOption("In a quiet library or a cozy study.", 0, 3, 0, 0),
-            QuizOption("In a workshop, studio, or at a canvas.", 0, 0, 3, 0),
-            QuizOption("Outdoors, hiking, or traveling.", 0, 0, 0, 3)
+        QuizQuestion("The fog of uncertainty descends. How do you navigate?", listOf(
+            QuizOption("Trust your instincts and adapt.", 0, 0, 0, 3),
+            QuizOption("Map the terrain methodically.", 0, 3, 0, 0),
+            QuizOption("Fortify your current position.", 3, 0, 0, 0)
         )),
-        QuizQuestion("What is your greatest weakness?", listOf(
-            QuizOption("Impatience and acting without thinking.", 3, 0, 0, 0),
-            QuizOption("Overthinking and analysis paralysis.", 0, 3, 0, 0),
-            QuizOption("Perfectionism and never finishing things.", 0, 0, 3, 0),
-            QuizOption("Restlessness and lack of routine.", 0, 0, 0, 3)
+        QuizQuestion("You find an ancient, broken artifact. You...", listOf(
+            QuizOption("Fix it using traditional methods.", 0, 0, 3, 0),
+            QuizOption("Decipher the runes powering it.", 0, 3, 0, 0),
+            QuizOption("Salvage it for raw materials.", 1, 0, 0, 2)
         )),
-        QuizQuestion("Choose your ideal weapon.", listOf(
-            QuizOption("A heavy Greatsword.", 3, 0, 0, 0),
-            QuizOption("An ancient Spellbook.", 0, 3, 0, 0),
-            QuizOption("A Chisel and Hammer.", 0, 0, 3, 0),
-            QuizOption("A Longbow and Compass.", 0, 0, 0, 3)
+        QuizQuestion("A dragon blocks your path. Your move?", listOf(
+            QuizOption("Strike with relentless force.", 3, 0, 0, 0),
+            QuizOption("Lure it into a clever trap.", 0, 1, 0, 3),
+            QuizOption("Cast a spell of redirection.", 0, 3, 0, 0)
         )),
-        QuizQuestion("How do you handle failure?", listOf(
-            QuizOption("Get angry and try again harder.", 3, 0, 0, 0),
-            QuizOption("Study what went wrong to never repeat it.", 0, 3, 0, 0),
-            QuizOption("Use the failure as inspiration for the next attempt.", 0, 0, 3, 0),
-            QuizOption("Brush it off and walk a different path.", 0, 0, 0, 3)
+        QuizQuestion("What is your greatest weapon?", listOf(
+            QuizOption("An unbreakable will.", 3, 0, 0, 0),
+            QuizOption("A sharp and focused mind.", 0, 3, 0, 0),
+            QuizOption("The hands of a master creator.", 0, 0, 3, 0),
+            QuizOption("A spirit that knows no borders.", 0, 0, 0, 3)
         )),
-        QuizQuestion("What legacy do you want to leave behind?", listOf(
-            QuizOption("To be remembered as the strongest and most reliable.", 3, 0, 0, 0),
-            QuizOption("To discover a truth that changes the world.", 0, 3, 0, 0),
-            QuizOption("To leave behind a beautiful creation that outlasts me.", 0, 0, 3, 0),
-            QuizOption("To map the uncharted and live truly free.", 0, 0, 0, 3)
+        QuizQuestion("How do you handle a defeat?", listOf(
+            QuizOption("Get back up and try harder.", 3, 0, 0, 0),
+            QuizOption("Analyze what went wrong.", 0, 3, 0, 0),
+            QuizOption("Find a creative alternative.", 0, 0, 3, 0)
         )),
-        QuizQuestion("Pick an element.", listOf(
-            QuizOption("Fire (Power & Destruction)", 3, 0, 0, 0),
-            QuizOption("Ice (Focus & Control)", 0, 3, 0, 0),
-            QuizOption("Lightning (Energy & Spark)", 0, 0, 3, 0),
-            QuizOption("Earth (Growth & Stability)", 0, 0, 0, 3)
-        )),
-        QuizQuestion("How structured is your ideal day?", listOf(
-            QuizOption("Strict military routine. No deviations.", 3, 1, 0, 0),
-            QuizOption("Scheduled blocks of deep work and rest.", 1, 3, 0, 1),
-            QuizOption("Bursts of intense inspiration, then rest.", 0, 0, 3, 0),
-            QuizOption("Completely fluid. I go where the wind takes me.", 0, 0, 1, 3)
+        QuizQuestion("Are you ready to forge your legacy, regardless of the hardship?", listOf(
+            QuizOption("I am ready.", 1, 1, 1, 1),
+            QuizOption("By my oath, I shall become.", 2, 2, 2, 2)
         )),
         QuizQuestion("Finally, how many moons will you commit to this Grand Campaign?", listOf(
-            QuizOption("3 Moons (A rapid, intense sprint)", 0, 0, 0, 0, 3),
-            QuizOption("6 Moons (A dedicated, steady journey)", 0, 0, 0, 0, 6),
-            QuizOption("9 Moons (A profound transformation)", 0, 0, 0, 0, 9),
+            QuizOption("3 Moons (A rapid sprint)", 0, 0, 0, 0, 3),
+            QuizOption("6 Moons (A steady journey)", 0, 0, 0, 0, 6),
             QuizOption("12 Moons (A complete rebirth)", 0, 0, 0, 0, 12)
         ))
     )
 
-    fun calculateSuggestion(selectedTraits: List<TraitOption>, answers: List<QuizOption>) {
+    fun initialize(context: Context) {
+        if (database == null) {
+            database = BecomingDatabase.getDatabase(context)
+            observeCharacter()
+            observeQuests()
+        }
+    }
+
+    private fun observeCharacter() {
+        viewModelScope.launch {
+            database?.characterDao()?.getCharacterState()?.collect { entity ->
+                entity?.let {
+                    Log.d("BECOMING", "Character Observed: ${it.heroName}, Streak: ${it.campfireStreak}, Attrs: ${it.selectedAttributeNames}")
+                    _charState.value = CharacterState(
+                        heroName = it.heroName, heroClass = it.heroClass,
+                        globalLevel = it.globalLevel, currentXp = it.currentXp,
+                        totalCampaignXp = 0,
+                        campfireStreak = it.campfireStreak,
+                        attrPhysicalFitness = it.attrPhysicalFitness,
+                        attrMentalFocus = it.attrMentalFocus,
+                        attrFinancialWealth = it.attrFinancialWealth,
+                        attrCreativeOutput = it.attrCreativeOutput,
+                        attrSocialCharisma = it.attrSocialCharisma,
+                        attrEmotionalResilience = it.attrEmotionalResilience,
+                        attrDeepKnowledge = it.attrDeepKnowledge,
+                        attrCareerGrowth = it.attrCareerGrowth,
+                        attrMindfulness = it.attrMindfulness,
+                        attrPhysicalEndurance = it.attrPhysicalEndurance,
+                        selectedAttributeNames = it.selectedAttributeNames.split(",").filter { s -> s.isNotEmpty() },
+                        onboardingComplete = it.onboardingComplete, isSoundEnabled = it.isSoundEnabled
+                    )
+                } ?: run {
+                    Log.d("BECOMING", "Character Entity is NULL")
+                }
+            }
+        }
+    }
+
+    private fun observeQuests() {
+        viewModelScope.launch {
+            database?.questDao()?.getActiveQuests()?.collect { quests ->
+                val now = System.currentTimeMillis()
+                // Relax filter to include current minute
+                val visibleQuests = quests.filter { it.createdAt <= now + 60000 }.take(20)
+                Log.d("BECOMING", "Quests Observed: ${visibleQuests.size} / ${quests.size}")
+                _activeQuests.value = visibleQuests
+            }
+        }
+    }
+
+    fun calculateSuggestion(selectedAttributes: List<AttributeOption>, answers: List<QuizOption>) {
         var k = 0; var m = 0; var a = 0; var r = 0; var timeline = 3
-        selectedTraits.forEach { k += it.kPts; m += it.mPts; a += it.aPts; r += it.rPts }
+        selectedAttributes.forEach { k += it.kPts; m += it.mPts; a += it.aPts; r += it.rPts }
         answers.forEach {
             k += it.knightPts; m += it.magePts; a += it.artisanPts; r += it.rangerPts
             if (it.timelineMoons > 0) timeline = it.timelineMoons
         }
         _chosenTimelineMoons.value = timeline
         _suggestedClass.value = when {
-            k >= m && k >= a && k >= r -> "Knight"
-            m >= k && m >= a && m >= r -> "Mage"
-            a >= k && a >= m && a >= r -> "Artisan"
-            else -> "Ranger"
+            k >= m && k >= a && k >= r -> "KNIGHT"
+            m >= k && m >= a && m >= r -> "MAGE"
+            a >= k && a >= m && a >= r -> "ARTISAN"
+            else -> "RANGER"
         }
     }
 
-    fun selectClassAndGenerateStories(name: String, path: String, traits: List<String>, context: Context) {
+    suspend fun finalizeCharacterAndCampaign(
+        name: String,
+        heroClass: String,
+        selectedAttributes: List<String>,
+        baselines: Map<String, Float>,
+        goals: Map<String, Float>,
+        context: Context
+    ) {
+        Log.d("BECOMING", "Finalizing Character: $name as $heroClass")
+        // Use withContext to ensure DB operations are on IO dispatcher
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            // CLEAR OLD DATA FIRST to ensure clean slate
+            database?.clearAllTables()
+            
+            val entity = CharacterEntity(
+                id = 1,
+                heroName = name, heroClass = heroClass.uppercase(),
+                globalLevel = 1, currentXp = 0, campfireStreak = 1,
+                selectedAttributeNames = selectedAttributes.joinToString(","),
+                lastLoginMillis = System.currentTimeMillis(),
+                onboardingComplete = true
+            )
+            database?.characterDao()?.updateCharacter(entity)
+            
+            // Generate Campaign Quests
+            baselines.forEach { (discName, baseline) ->
+                val goal = goals[discName] ?: (baseline * 1.5f)
+                val disc = disciplineRegistry.find { d -> d.name == discName }
+                val attributeCategory = disc?.attributeCategory ?: "Mindfulness"
+                val config = getTacticalConfig(discName)
+                
+                val durationDays = _chosenTimelineMoons.value * 30
+                
+                val quests = SystematicQuestEngine.generateCampaignQuests(
+                    heroClass = entity.heroClass,
+                    activityName = discName,
+                    attributeCategory = attributeCategory,
+                    userGoal = goal,
+                    durationDays = durationDays,
+                    unit = config.unit
+                )
+
+                Log.d("BECOMING", "Generating ${quests.size} quests for $discName")
+                quests.forEach { q -> 
+                    database?.questDao()?.upsertQuest(q) 
+                }
+            }
+        }
+        
+        Prefs.setOnboardingComplete(context, true)
+        
         val totalXp = _chosenTimelineMoons.value * 10000
-        val stories = when (path) {
-            "Knight" -> listOf(
-                CampaignStory("k1", "The Iron Vanguard", "Transform your body into an unbreakable fortress. Forge discipline through sweat, heavy iron, and relentless physical conditioning.", totalXp),
-                CampaignStory("k2", "The Dragon's Ascent", "Push your cardiovascular limits. Build the superhuman endurance required to conquer marathons, outrun exhaustion, and slay the beasts of lethargy.", totalXp),
-                CampaignStory("k3", "Shield of the Realm", "Achieve peak physical mastery to become the ultimate protector of your domain and family. Health is the highest form of defense.", totalXp)
+        val stories = when (heroClass.uppercase()) {
+            "KNIGHT" -> listOf(
+                CampaignStory("k1", "The Iron Vanguard", "Transform your body into an unbreakable fortress.", totalXp),
+                CampaignStory("k2", "The Dragon's Ascent", "Push your cardiovascular limits.", totalXp),
+                CampaignStory("k3", "Shield of the Realm", "Health is the highest form of defense.", totalXp)
             )
-            "Mage" -> listOf(
-                CampaignStory("m1", "The Archmage's Trial", "Absorb the knowledge of the waking world. Master your career or degree through intense study, complex problem solving, and unbroken mental focus.", totalXp),
-                CampaignStory("m2", "The Scholar's Path", "Banish modern distractions. Build an impenetrable mind palace capable of passing any certification or mastering any new language.", totalXp),
-                CampaignStory("m3", "The Chronomancer", "Master the flow of time. Optimize your productivity systems and daily routines to achieve financial wealth and deep, lasting wisdom.", totalXp)
+            "MAGE" -> listOf(
+                CampaignStory("m1", "The Archmage's Trial", "Absorb the knowledge of the waking world.", totalXp),
+                CampaignStory("m2", "The Scholar's Path", "Banish modern distractions.", totalXp),
+                CampaignStory("m3", "The Chronomancer", "Master the flow of time.", totalXp)
             )
-            "Artisan" -> listOf(
-                CampaignStory("a1", "The Master's Opus", "Dedicate yourself fully to your primary craft. Turn daily micro-habits into a legendary, finished creation (a novel, a portfolio, an album).", totalXp),
-                CampaignStory("a2", "The Golden Forge", "Build your financial and creative independence. Launch your startup, side-hustle, or project stroke by stroke, day by day.", totalXp),
-                CampaignStory("a3", "The Architect's Dream", "Design the life you want to live. Sketch the blueprint of your ideal lifestyle and execute the milestones with beautiful precision.", totalXp)
+            "ARTISAN" -> listOf(
+                CampaignStory("a1", "The Master's Opus", "Dedicate yourself fully to your primary craft.", totalXp),
+                CampaignStory("a2", "The Golden Forge", "Build your financial independence.", totalXp),
+                CampaignStory("a3", "The Architect's Dream", "Design the life you want to live.", totalXp)
             )
             else -> listOf(
-                CampaignStory("r1", "The Pathfinder's Journey", "Explore the wild world. Build a daily habit of movement, hiking, and deep physical presence in nature.", totalXp),
-                CampaignStory("r2", "The Wild Hunt", "Track down your anxieties. Use breathwork, meditation, and mindfulness to build an unbreakable, calm spirit.", totalXp),
-                CampaignStory("r3", "The Apex Explorer", "Step completely out of your comfort zone. Log miles and quiet moments to discover your true self in the unknown.", totalXp)
+                CampaignStory("r1", "The Pathfinder's Journey", "Explore the wild world.", totalXp),
+                CampaignStory("r2", "The Wild Hunt", "Track down your anxieties.", totalXp),
+                CampaignStory("r3", "The Apex Explorer", "Step out of your comfort zone.", totalXp)
             )
         }
-        _charState.update { it.copy(name = name, heroClass = path, traits = traits, onboardingComplete = true) }
         _generatedStories.value = stories
-        _activeQuests.value = allFlagshipQuests.filter { it.path == path }
-        saveData(context)
     }
 
-    fun sealCampaign(story: CampaignStory, context: Context) {
-        _charState.update { it.copy(activeCampaign = story) }
-        saveData(context)
+    fun sealCampaign(story: CampaignStory, context: Context) {}
+
+    fun addCustomQuest(baseTask: String, timeScale: String, attributeName: String) {
+        viewModelScope.launch {
+            val newQuest = QuestEntity(
+                id = "custom_${System.currentTimeMillis()}",
+                path = _charState.value.heroClass,
+                baseTask = baseTask,
+                timeScale = timeScale,
+                associatedTrait = attributeName,
+                status = "ACTIVE",
+                createdAt = System.currentTimeMillis(),
+                mapId = "map_custom",
+                xp = if (timeScale == "MONTHLY") 2000 else if (timeScale == "WEEKLY") 750 else 150
+            )
+            database?.questDao()?.upsertQuest(newQuest)
+        }
     }
 
-    fun addCustomQuest(baseTask: String, timeScale: String) {
-        val baseXp = 150
-        val calculatedXp = when(timeScale) {
-            "WEEKLY" -> baseXp * 5
-            "MONTHLY" -> baseXp * 20
-            else -> baseXp
-        }
-        val newQuest = Quest(
-            id = "custom_${System.currentTimeMillis()}",
-            path = _charState.value.heroClass,
-            baseTask = baseTask,
-            xp = calculatedXp,
-            iconType = "scroll",
-            type = QuestType.CHECK,
-            targetValue = 0,
-            timeScale = timeScale
-        )
-        _activeQuests.update { it + newQuest }
-    }
-
-    fun generateQuestNarrative(heroClass: String, realWorldTask: String, timeScale: String): QuestFlavor {
-        val lexicon = lexicons[heroClass] ?: knightLexicon
-        val hook = when(timeScale) {
-            "WEEKLY" -> lexicon.weeklyHooks.random()
-            "MONTHLY" -> lexicon.monthlyHooks.random()
-            else -> lexicon.dailyHooks.random()
-        }
-        val action = lexicon.actions.random()
-        val enemy = lexicon.enemies.random()
-        val victory = lexicon.victories.random()
-
-        val briefing = when(timeScale) {
-            "DAILY" -> "$hook To prepare for what is to come, you must $action. Today's discipline: $realWorldTask. Do not let $enemy catch you off guard."
-            "WEEKLY" -> "$hook This is no longer practice. Use the strength you've gathered this week to $action! Focus on this trial: $realWorldTask."
-            "MONTHLY" -> "$hook This is the climax of your campaign. Everything you have done has led to this. Complete your ultimate objective: $realWorldTask. Defeat $enemy!"
-            else -> "Complete the task: $realWorldTask."
-        }
-        val aftermath = when(timeScale) {
-            "DAILY" -> "You completed: $realWorldTask. $victory The daily grind hardens you."
-            "WEEKLY" -> "You conquered the weekly trial: $realWorldTask. You pushed back $enemy and proved your growth."
-            "MONTHLY" -> "You survived the monthly milestone: $realWorldTask! $victory The realm will sing songs of your triumph!"
-            else -> "Task sealed."
-        }
+    fun generateQuestNarrative(quest: QuestEntity): QuestFlavor {
         return QuestFlavor(
-            title = if (timeScale == "MONTHLY") "THE GRAND TRIAL" else if (timeScale == "WEEKLY") "THE ESCALATION" else "Daily Discipline",
-            narrativeDesc = briefing,
-            aftermathLore = aftermath
+            title = quest.baseTask.split(":").first().ifEmpty { "Vanguard's Duty" },
+            narrativeDesc = quest.baseTask,
+            aftermathLore = "The legend records your triumph."
         )
     }
 
-    fun grantBounty(xp: Int, context: Context): Boolean {
-        var leveledUp = false
-        _charState.update { state ->
-            var newXp = state.currentXp + xp
-            var newLevel = state.level
-            val xpNeeded = state.level * 1000
-            if (newXp >= xpNeeded) { newXp -= xpNeeded; newLevel++; leveledUp = true }
-            state.copy(level = newLevel, currentXp = newXp, totalCampaignXp = state.totalCampaignXp + xp)
+    fun toggleSound(context: Context) {
+        viewModelScope.launch {
+            val entity = database?.characterDao()?.getCharacterState()?.first()
+            entity?.let {
+                database?.characterDao()?.updateCharacter(it.copy(isSoundEnabled = !it.isSoundEnabled))
+            }
         }
-        saveData(context)
-        return leveledUp
     }
 
-    fun grantPartialBounty(quest: Quest, completedValue: Int, context: Context): Boolean {
-        val fraction = if (quest.targetValue > 0) completedValue.toFloat() / quest.targetValue.toFloat() else 1f
-        val xpToGrant = (quest.xp * fraction).roundToInt()
-        return grantBounty(xpToGrant, context)
+    fun grantBounty(questId: String, xp: Int) {
+        viewModelScope.launch {
+            val char = database?.characterDao()?.getCharacterState()?.first()
+            val quest = _activeQuests.value.find { it.id == questId }
+            
+            char?.let {
+                val trait = quest?.associatedTrait ?: "Mindfulness"
+                
+                var newPF = it.attrPhysicalFitness; var newMF = it.attrMentalFocus
+                var newFW = it.attrFinancialWealth; var newCO = it.attrCreativeOutput
+                var newSC = it.attrSocialCharisma; var newER = it.attrEmotionalResilience
+                var newDK = it.attrDeepKnowledge; var newCG = it.attrCareerGrowth
+                var newM = it.attrMindfulness; var newPE = it.attrPhysicalEndurance
+
+                when(trait) {
+                    "Physical Fitness" -> newPF += xp
+                    "Mental Focus" -> newMF += xp
+                    "Financial Wealth" -> newFW += xp
+                    "Creative Output" -> newCO += xp
+                    "Social Charisma" -> newSC += xp
+                    "Emotional Resilience" -> newER += xp
+                    "Deep Knowledge" -> newDK += xp
+                    "Career Growth" -> newCG += xp
+                    "Mindfulness" -> newM += xp
+                    "Physical Endurance" -> newPE += xp
+                }
+
+                var newXp = it.currentXp + xp
+                var newLevel = it.globalLevel
+                if (newXp >= it.globalLevel * 1000) {
+                    newXp -= it.globalLevel * 1000
+                    newLevel++
+                }
+
+                database?.characterDao()?.updateCharacter(it.copy(
+                    globalLevel = newLevel, currentXp = newXp,
+                    attrPhysicalFitness = newPF, attrMentalFocus = newMF,
+                    attrFinancialWealth = newFW, attrCreativeOutput = newCO,
+                    attrSocialCharisma = newSC, attrEmotionalResilience = newER,
+                    attrDeepKnowledge = newDK, attrCareerGrowth = newCG,
+                    attrMindfulness = newM, attrPhysicalEndurance = newPE
+                ))
+                database?.questDao()?.completeQuest(questId)
+            }
+        }
     }
 
-    fun saveData(context: Context) {
-        val prefs = context.getSharedPreferences("BecomingPrefs", Context.MODE_PRIVATE)
-        prefs.edit().apply {
-            putString("state", jsonParser.encodeToString(_charState.value))
-            apply()
+    fun grantPartialBounty(questId: String, completedValue: Int, targetValue: Int, xp: Int) {
+        val fraction = if (targetValue > 0) completedValue.toFloat() / targetValue.toFloat() else 1f
+        val xpToGrant = (xp * fraction).roundToInt()
+        grantBounty(questId, xpToGrant)
+    }
+
+    fun resetProgress(context: Context) {
+        viewModelScope.launch {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                database?.clearAllTables()
+            }
+            Prefs.setOnboardingComplete(context, false)
+            _charState.value = CharacterState()
+            _activeQuests.value = emptyList()
         }
     }
 
     fun loadData(context: Context): Boolean {
-        val prefs = context.getSharedPreferences("BecomingPrefs", Context.MODE_PRIVATE)
-        val stateJson = prefs.getString("state", null)
-        if (stateJson != null) {
-            try {
-                var loadedState = jsonParser.decodeFromString<CharacterState>(stateJson)
-                val now = System.currentTimeMillis()
-                val oneDayMillis = 24 * 60 * 60 * 1000L
-                val diff = now - loadedState.lastLoginMillis
-                loadedState = when {
-                    loadedState.lastLoginMillis == 0L -> loadedState.copy(lastLoginMillis = now, streakCount = 1)
-                    diff > oneDayMillis * 2 -> loadedState.copy(lastLoginMillis = now, streakCount = 0)
-                    diff > oneDayMillis -> loadedState.copy(lastLoginMillis = now, streakCount = loadedState.streakCount + 1)
-                    else -> loadedState
-                }
-                _charState.value = loadedState
-                saveData(context)
-                _activeQuests.value = allFlagshipQuests.filter { it.path == loadedState.heroClass }
-                return loadedState.onboardingComplete
-            } catch (e: Exception) { return false }
-        }
+        initialize(context)
         return false
     }
 }
